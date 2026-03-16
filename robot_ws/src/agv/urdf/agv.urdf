@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AGV URDF — converted from SolidWorks export to ROS2
+  Changes from original SolidWorks export:
+    - Added base_footprint link (required by Nav2)
+    - Renamed LInk_lidar -> laser_frame (matches rplidar_ros2 default frame id)
+    - Zeroed-out near-zero inertia cross-terms from CAD float noise
+    - Converted package.xml / CMakeLists.txt to ament_cmake (ROS2)
+  Wheel geometry (from CAD):
+    Right joint y = -0.22249 m  |  Left joint y = +0.22251 m
+    Wheelbase = 0.445 m  |  Wheel diameter = 0.200 m
+    Wheel z offset from base_link origin = -0.213 m
+-->
+<robot name="agv">
+
+  <!-- base_footprint: ground-plane reference frame, parent of base_link.
+       Nav2 uses this as the robot footprint origin. -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <!-- base_link is 0.213 m above ground (wheel-axle height) -->
+    <origin xyz="0 0 0.213" rpy="0 0 0"/>
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+  </joint>
+
+  <!-- ── base_link ─────────────────────────────────────────────────────────── -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.00756321870276173 -0.000328782203564824 -0.113156648176191"
+              rpy="0 0 0"/>
+      <mass value="66.4516103372671"/>
+      <inertia ixx="1.59681666812403"
+               ixy="-2.16601075665571E-05"
+               ixz="-0.0011397853211746"
+               iyy="2.27741672710285"
+               iyz="-0.000822982320288344"
+               izz="3.27527312939189"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/base_link.STL"/>
+      </geometry>
+      <material name="silver">
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/base_link.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- ── Right wheel ────────────────────────────────────────────────────────── -->
+  <link name="link_R">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.675"/>
+      <inertia ixx="0.0045043" ixy="0" ixz="0"
+               iyy="0.0081816" iyz="0"
+               izz="0.0045043"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/link_R.STL"/>
+      </geometry>
+      <material name="silver">
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/link_R.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="R" type="continuous">
+    <origin xyz="0.0074148 -0.22249 -0.213" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child  link="link_R"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ── Left wheel ─────────────────────────────────────────────────────────── -->
+  <link name="Link_L">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.675"/>
+      <inertia ixx="0.0045043" ixy="0" ixz="0"
+               iyy="0.0081816" iyz="0"
+               izz="0.0045043"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/Link_L.STL"/>
+      </geometry>
+      <material name="silver">
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/Link_L.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="L" type="continuous">
+    <origin xyz="0.0074148 0.22251 -0.213" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child  link="Link_L"/>
+    <axis xyz="0 -1 0"/>
+  </joint>
+
+  <!-- ── Lidar ──────────────────────────────────────────────────────────────── -->
+  <!-- Renamed from LInk_lidar to laser_frame to match rplidar_ros2 frame id.
+       Position: 0.041 m above base_link origin, slightly forward (0.0074 m). -->
+  <link name="laser_frame">
+    <inertial>
+      <origin xyz="0 0 -0.0205" rpy="0 0 0"/>
+      <mass value="0.097409"/>
+      <inertia ixx="3.2062E-05" ixy="0" ixz="0"
+               iyy="3.2062E-05" iyz="0"
+               izz="3.6833E-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/LInk_lidar.STL"/>
+      </geometry>
+      <material name="silver">
+        <color rgba="0.79216 0.81961 0.93333 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://agv/meshes/LInk_lidar.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="lidar" type="fixed">
+    <origin xyz="0.0074148 0 0.041" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child  link="laser_frame"/>
+  </joint>
+
+</robot>

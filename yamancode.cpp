@@ -75,7 +75,7 @@ constexpr float COUNTS_PER_REV  = 600.0f * 4.0f * (32.0f / 9.0f); // ≈ 8533.33
 constexpr float WHEEL_DIAM_M    = 0.200f;
 constexpr float WHEEL_CIRCUM_M  = 3.14159265f * WHEEL_DIAM_M;      // 0.6283 m
 constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV; // ~7.363e-5 m
-constexpr float WHEELBASE_M     = 0.400f;
+constexpr float WHEELBASE_M     = 0.445f;  // from SolidWorks CAD (joint y: -0.22249 + 0.22251)
 
 // ── PID gains (tune on real robot) ───────────────────────────────────────────
 constexpr float PID_KP          = 150.0f;
