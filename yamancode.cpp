@@ -8,7 +8,7 @@
  *   Motor Driver: Cytron MDD20A
  *     Left  PWM→D6,  DIR→D52
  *     Right PWM→D7,  DIR→D53
- *   IMU : MPU9250  SCL→D21, SDA→D20
+ *   IMU : BNO055  SCL→D21, SDA→D20  (I2C addr 0x28, or 0x29 if ADR pin high)
  *
  * Gear train:
  *   Motor gear 9T → Encoder gear 9T (1:1 with motor)
@@ -16,7 +16,7 @@
  *   => counts per wheel rev = 600 × 4 × (32/9) ≈ 8533.33
  *   => wheel circumference  = π × 0.200 m = 0.6283 m
  *   => meters per count     = 0.6283 / 8533.33 ≈ 7.363e-5 m
- *   Wheelbase (L)           = 0.400 m
+ *   Wheelbase (L)           = 0.445 m  (from SolidWorks CAD)
  *
  * ── Serial protocol (115200 baud, '\n' terminated) ──────────────────────────
  *
@@ -42,21 +42,22 @@
  *  │   th    in radians (float, 4 dp)                                        │
  *  │   vl,vr actual wheel velocities (m/s, 4 dp)                             │
  *  │                                                                          │
- *  │ "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\n"   IMU (50 Hz)                      │
- *  │   accelerations in m/s², gyro in rad/s  (float, 3 dp)                  │
+ *  │ "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<qw>,<qx>,<qy>,<qz>\n"  IMU (50 Hz)  │
+ *  │   ax,ay,az  linear accel m/s²  (gravity removed by BNO055 fusion)       │
+ *  │   gx,gy,gz  angular velocity rad/s                                       │
+ *  │   qw,qx,qy,qz  orientation quaternion  (absolute, from BNO055 fusion)   │
  *  └──────────────────────────────────────────────────────────────────────────┘
  *
- *  ROS2 side: run a serial bridge node that converts:
- *    /cmd_vel (Twist) → "V:<vx>,<wz>\n"
- *    "O:..." line     → nav_msgs/Odometry + odom→base_link TF
- *    "I:..." line     → sensor_msgs/Imu
- *
- * Requires library: MPU9250 by hideakitai (install via Library Manager)
+ * Requires libraries (install via Arduino Library Manager):
+ *   - Adafruit BNO055
+ *   - Adafruit Unified Sensor
  */
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <MPU9250.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
 #include <math.h>
 
 // ── Pin definitions ──────────────────────────────────────────────────────────
@@ -75,14 +76,14 @@ constexpr float COUNTS_PER_REV  = 600.0f * 4.0f * (32.0f / 9.0f); // ≈ 8533.33
 constexpr float WHEEL_DIAM_M    = 0.200f;
 constexpr float WHEEL_CIRCUM_M  = 3.14159265f * WHEEL_DIAM_M;      // 0.6283 m
 constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV; // ~7.363e-5 m
-constexpr float WHEELBASE_M     = 0.445f;  // from SolidWorks CAD (joint y: -0.22249 + 0.22251)
+constexpr float WHEELBASE_M     = 0.445f;
 
 // ── PID gains (tune on real robot) ───────────────────────────────────────────
-constexpr float PID_KP          = 150.0f;
-constexpr float PID_KI          = 80.0f;
-constexpr float PID_KD          = 3.0f;
-constexpr float PID_INTEGRAL_MAX = 80.0f;   // anti-windup clamp
-constexpr float MAX_VEL_MS      = 0.5f;     // maximum wheel velocity (m/s)
+constexpr float PID_KP           = 150.0f;
+constexpr float PID_KI           = 80.0f;
+constexpr float PID_KD           = 3.0f;
+constexpr float PID_INTEGRAL_MAX = 80.0f;
+constexpr float MAX_VEL_MS       = 0.5f;
 
 // ── Encoder state (ISR-updated) ──────────────────────────────────────────────
 volatile int32_t enc_left  = 0;
@@ -93,8 +94,9 @@ void enc_left_b()  { digitalRead(ENC_L_A) == digitalRead(ENC_L_B) ? enc_left++  
 void enc_right_a() { digitalRead(ENC_R_A) == digitalRead(ENC_R_B) ? enc_right++ : enc_right--; }
 void enc_right_b() { digitalRead(ENC_R_A) == digitalRead(ENC_R_B) ? enc_right-- : enc_right++; }
 
-// ── IMU ──────────────────────────────────────────────────────────────────────
-MPU9250 imu;
+// ── IMU (BNO055) ─────────────────────────────────────────────────────────────
+// ID=55, address=0x28. Change to 0x29 if ADR pin is pulled HIGH.
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 bool imu_ok = false;
 
 // ── Motor driver ─────────────────────────────────────────────────────────────
@@ -106,18 +108,18 @@ void setMotor(uint8_t pwmPin, uint8_t dirPin, int16_t speed) {
 
 // ── PID state per wheel ───────────────────────────────────────────────────────
 struct PID {
-  float target   = 0.0f;   // desired velocity (m/s)
-  float integral = 0.0f;
-  float prev_err = 0.0f;
+  float target    = 0.0f;
+  float integral  = 0.0f;
+  float prev_err  = 0.0f;
 
   int16_t compute(float actual, float dt) {
     if (dt <= 0.0f) return 0;
-    float err  = target - actual;
-    integral  += err * dt;
-    integral   = constrain(integral, -PID_INTEGRAL_MAX, PID_INTEGRAL_MAX);
+    float err   = target - actual;
+    integral   += err * dt;
+    integral    = constrain(integral, -PID_INTEGRAL_MAX, PID_INTEGRAL_MAX);
     float deriv = (err - prev_err) / dt;
-    prev_err   = err;
-    float out  = PID_KP * err + PID_KI * integral + PID_KD * deriv;
+    prev_err    = err;
+    float out   = PID_KP * err + PID_KI * integral + PID_KD * deriv;
     return (int16_t)constrain(out, -255.0f, 255.0f);
   }
 
@@ -127,25 +129,24 @@ struct PID {
 PID pid_left, pid_right;
 
 // ── Odometry state ────────────────────────────────────────────────────────────
-float odom_x   = 0.0f;
-float odom_y   = 0.0f;
-float odom_th  = 0.0f;
-float vel_left_actual  = 0.0f;
-float vel_right_actual = 0.0f;
-int32_t enc_left_prev  = 0;
-int32_t enc_right_prev = 0;
+float   odom_x   = 0.0f;
+float   odom_y   = 0.0f;
+float   odom_th  = 0.0f;
+float   vel_left_actual  = 0.0f;
+float   vel_right_actual = 0.0f;
+int32_t enc_left_prev    = 0;
+int32_t enc_right_prev   = 0;
 
-// ── Watchdog — stop if no command for 500 ms ─────────────────────────────────
+// ── Watchdog ──────────────────────────────────────────────────────────────────
 uint32_t last_cmd_ms = 0;
 constexpr uint32_t CMD_TIMEOUT_MS = 500;
 
 // ── Keyboard teleop speed step ───────────────────────────────────────────────
-float key_vx = 0.20f;   // m/s linear step
-float key_wz = 0.40f;   // rad/s angular step
+float key_vx = 0.20f;
+float key_wz = 0.40f;
 
 void setVelocity(float vx, float wz) {
   vx = constrain(vx, -MAX_VEL_MS, MAX_VEL_MS);
-  // differential drive: v_L = vx - wz*L/2,  v_R = vx + wz*L/2
   pid_left.target  = constrain(vx - wz * (WHEELBASE_M / 2.0f), -MAX_VEL_MS, MAX_VEL_MS);
   pid_right.target = constrain(vx + wz * (WHEELBASE_M / 2.0f), -MAX_VEL_MS, MAX_VEL_MS);
   last_cmd_ms = millis();
@@ -155,7 +156,6 @@ void setVelocity(float vx, float wz) {
 String serialBuf = "";
 
 void parseCommand(const String &cmd) {
-  // "V:<vx>,<wz>" — velocity command from ROS2 bridge
   if (cmd.startsWith("V:")) {
     int comma = cmd.indexOf(',', 2);
     if (comma < 0) return;
@@ -165,38 +165,35 @@ void parseCommand(const String &cmd) {
     return;
   }
 
-  // Single-character keyboard teleop (teleop_twist_keyboard layout)
   if (cmd.length() == 1) {
     char c = cmd.charAt(0);
     switch (c) {
-      case 'i': setVelocity( key_vx,     0.0f);    break;  // forward
-      case ',': setVelocity(-key_vx,     0.0f);    break;  // backward
-      case 'j': setVelocity( 0.0f,       key_wz);  break;  // rotate left
-      case 'l': setVelocity( 0.0f,      -key_wz);  break;  // rotate right
-      case 'u': setVelocity( key_vx,     key_wz);  break;  // fwd + left
-      case 'o': setVelocity( key_vx,    -key_wz);  break;  // fwd + right
-      case 'm': setVelocity(-key_vx,     key_wz);  break;  // bwd + left
-      case '.': setVelocity(-key_vx,    -key_wz);  break;  // bwd + right
-      case 'k':                                              // stop
-        pid_left.target = 0.0f;
-        pid_right.target = 0.0f;
-        pid_left.reset();
-        pid_right.reset();
+      case 'i': setVelocity( key_vx,  0.0f);   break;
+      case ',': setVelocity(-key_vx,  0.0f);   break;
+      case 'j': setVelocity( 0.0f,    key_wz); break;
+      case 'l': setVelocity( 0.0f,   -key_wz); break;
+      case 'u': setVelocity( key_vx,  key_wz); break;
+      case 'o': setVelocity( key_vx, -key_wz); break;
+      case 'm': setVelocity(-key_vx,  key_wz); break;
+      case '.': setVelocity(-key_vx, -key_wz); break;
+      case 'k':
+        pid_left.target = 0.0f;  pid_right.target = 0.0f;
+        pid_left.reset();         pid_right.reset();
         setMotor(MOT_L_PWM, MOT_L_DIR, 0);
         setMotor(MOT_R_PWM, MOT_R_DIR, 0);
         last_cmd_ms = millis();
         break;
       case '+': key_vx = min(key_vx + 0.05f, MAX_VEL_MS);
-                key_wz = min(key_wz + 0.10f, 2.0f);        break;
+                key_wz = min(key_wz + 0.10f, 2.0f);       break;
       case '-': key_vx = max(key_vx - 0.05f, 0.05f);
-                key_wz = max(key_wz - 0.10f, 0.10f);       break;
+                key_wz = max(key_wz - 0.10f, 0.10f);      break;
       default: break;
     }
   }
 }
 
 // ── Timing ────────────────────────────────────────────────────────────────────
-constexpr uint32_t LOOP_INTERVAL_MS = 20;   // 50 Hz
+constexpr uint32_t LOOP_INTERVAL_MS = 20;  // 50 Hz
 uint32_t last_loop_ms = 0;
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -217,18 +214,25 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENC_R_A), enc_right_a, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_R_B), enc_right_b, CHANGE);
 
-  // IMU
+  // BNO055
   Wire.begin();
-  imu_ok = imu.setup(0x68);
-  if (!imu_ok) Serial.println("ERR:IMU_NOT_FOUND");
+  imu_ok = bno.begin();
+  if (!imu_ok) {
+    Serial.println("ERR:IMU_NOT_FOUND");
+  } else {
+    // Use NDOF mode: full fusion with accelerometer + gyro + magnetometer
+    bno.setMode(OPERATION_MODE_NDOF);
+    delay(100);
+    Serial.println("INFO:IMU_OK");
+  }
 
-  last_cmd_ms   = millis();
-  last_loop_ms  = millis();
+  last_cmd_ms  = millis();
+  last_loop_ms = millis();
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 void loop() {
-  // ── 1. Read incoming serial ─────────────────────────────────────────────────
+  // ── 1. Read incoming serial ──────────────────────────────────────────────────
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n') {
@@ -240,19 +244,19 @@ void loop() {
     }
   }
 
-  // ── 2. Fixed-rate control + publish ─────────────────────────────────────────
+  // ── 2. Fixed-rate control + publish ──────────────────────────────────────────
   uint32_t now = millis();
   if (now - last_loop_ms < LOOP_INTERVAL_MS) return;
   float dt = (now - last_loop_ms) * 1e-3f;
   last_loop_ms = now;
 
-  // ── 3. Watchdog — stop motors if no recent command ──────────────────────────
+  // ── 3. Watchdog ───────────────────────────────────────────────────────────────
   if (now - last_cmd_ms > CMD_TIMEOUT_MS) {
     pid_left.target  = 0.0f;
     pid_right.target = 0.0f;
   }
 
-  // ── 4. Encoder snapshot ──────────────────────────────────────────────────────
+  // ── 4. Encoder snapshot ───────────────────────────────────────────────────────
   noInterrupts();
   int32_t lc = enc_left;
   int32_t rc = enc_right;
@@ -263,36 +267,33 @@ void loop() {
   enc_left_prev  = lc;
   enc_right_prev = rc;
 
-  float dl = dl_counts * M_PER_COUNT;  // metres travelled by left wheel
-  float dr = dr_counts * M_PER_COUNT;  // metres travelled by right wheel
+  float dl = dl_counts * M_PER_COUNT;
+  float dr = dr_counts * M_PER_COUNT;
 
-  // ── 5. Actual wheel velocities ───────────────────────────────────────────────
+  // ── 5. Actual wheel velocities ────────────────────────────────────────────────
   vel_left_actual  = dl / dt;
   vel_right_actual = dr / dt;
 
-  // ── 6. PID → motor output ────────────────────────────────────────────────────
+  // ── 6. PID → motor output ─────────────────────────────────────────────────────
   int16_t pwm_l = pid_left.compute(vel_left_actual,  dt);
   int16_t pwm_r = pid_right.compute(vel_right_actual, dt);
 
-  // If target is zero and robot is near stopped, cut PWM completely
   if (pid_left.target  == 0.0f && abs(vel_left_actual)  < 0.01f) { pwm_l = 0; pid_left.reset();  }
   if (pid_right.target == 0.0f && abs(vel_right_actual) < 0.01f) { pwm_r = 0; pid_right.reset(); }
 
   setMotor(MOT_L_PWM, MOT_L_DIR, pwm_l);
   setMotor(MOT_R_PWM, MOT_R_DIR, pwm_r);
 
-  // ── 7. Odometry integration ──────────────────────────────────────────────────
+  // ── 7. Odometry integration ───────────────────────────────────────────────────
   float d_center = (dl + dr) * 0.5f;
   float d_theta  = (dr - dl) / WHEELBASE_M;
   odom_th += d_theta;
-  // wrap to [-π, π]
   while (odom_th >  3.14159265f) odom_th -= 2.0f * 3.14159265f;
   while (odom_th < -3.14159265f) odom_th += 2.0f * 3.14159265f;
-  odom_x  += d_center * cos(odom_th - d_theta * 0.5f);
-  odom_y  += d_center * sin(odom_th - d_theta * 0.5f);
+  odom_x += d_center * cos(odom_th - d_theta * 0.5f);
+  odom_y += d_center * sin(odom_th - d_theta * 0.5f);
 
-  // ── 8. Publish odometry ──────────────────────────────────────────────────────
-  // "O:<x>,<y>,<th>,<vl>,<vr>"
+  // ── 8. Publish odometry ───────────────────────────────────────────────────────
   Serial.print("O:");
   Serial.print(odom_x, 4);          Serial.print(',');
   Serial.print(odom_y, 4);          Serial.print(',');
@@ -301,18 +302,29 @@ void loop() {
   Serial.print(vel_right_actual, 4);
   Serial.print('\n');
 
-  // ── 9. Publish IMU ───────────────────────────────────────────────────────────
+  // ── 9. Publish IMU (BNO055) ───────────────────────────────────────────────────
   if (imu_ok) {
-    imu.update();
-    // "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>"
-    // getAcc* returns g → convert to m/s²; getGyro* returns deg/s → rad/s
+    // Linear acceleration (m/s²) — gravity already removed by BNO055 fusion
+    imu::Vector<3> accel = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+
+    // Angular velocity (rad/s)
+    imu::Vector<3> gyro  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+
+    // Orientation quaternion from onboard fusion (absolute, NED frame)
+    imu::Quaternion quat = bno.getQuat();
+
+    // "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<qw>,<qx>,<qy>,<qz>"
     Serial.print("I:");
-    Serial.print(imu.getAccX()  * 9.80665f, 3); Serial.print(',');
-    Serial.print(imu.getAccY()  * 9.80665f, 3); Serial.print(',');
-    Serial.print(imu.getAccZ()  * 9.80665f, 3); Serial.print(',');
-    Serial.print(imu.getGyroX() * 0.01745f, 3); Serial.print(',');
-    Serial.print(imu.getGyroY() * 0.01745f, 3); Serial.print(',');
-    Serial.print(imu.getGyroZ() * 0.01745f, 3);
+    Serial.print(accel.x(), 3); Serial.print(',');
+    Serial.print(accel.y(), 3); Serial.print(',');
+    Serial.print(accel.z(), 3); Serial.print(',');
+    Serial.print(gyro.x(),  3); Serial.print(',');
+    Serial.print(gyro.y(),  3); Serial.print(',');
+    Serial.print(gyro.z(),  3); Serial.print(',');
+    Serial.print(quat.w(),  4); Serial.print(',');
+    Serial.print(quat.x(),  4); Serial.print(',');
+    Serial.print(quat.y(),  4); Serial.print(',');
+    Serial.print(quat.z(),  4);
     Serial.print('\n');
   }
 }

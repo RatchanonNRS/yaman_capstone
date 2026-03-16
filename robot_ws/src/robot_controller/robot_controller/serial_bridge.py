@@ -2,15 +2,18 @@
 serial_bridge.py — ROS2 node that bridges Arduino Mega ↔ ROS2
 
   Arduino → RPi  (parsed here):
-    "O:<x>,<y>,<th>,<vl>,<vr>\\n"  → nav_msgs/Odometry  +  odom→base_footprint TF
-    "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\\n" → sensor_msgs/Imu
+    "O:<x>,<y>,<th>,<vl>,<vr>\\n"                          → nav_msgs/Odometry + odom→base_footprint TF
+    "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<qw>,<qx>,<qy>,<qz>\\n" → sensor_msgs/Imu  (BNO055 fusion)
+       ax/ay/az  = linear accel m/s²  (gravity removed by BNO055)
+       gx/gy/gz  = angular velocity rad/s
+       qw/qx/qy/qz = absolute orientation quaternion from BNO055
 
   RPi → Arduino  (sent here):
     /cmd_vel (Twist) → "V:<vx>,<wz>\\n"
     watchdog: sends "V:0,0\\n" if no /cmd_vel for 500 ms
 
 ROS2 parameters (set in launch file or command line):
-  serial_port   (string, default /dev/ttyACM0)
+  serial_port   (string, default /dev/ttyUSBArduinoMega)
   baud_rate     (int,    default 115200)
 """
 
@@ -170,8 +173,10 @@ class SerialBridge(Node):
 
     # ── Parse IMU line and publish ────────────────────────────────────────────
     def _handle_imu(self, payload: str):
+        # Format: ax,ay,az,gx,gy,gz,qw,qx,qy,qz  (10 fields from BNO055)
         try:
-            ax, ay, az, gx, gy, gz = [float(v) for v in payload.split(',')]
+            ax, ay, az, gx, gy, gz, qw, qx, qy, qz = [
+                float(v) for v in payload.split(',')]
         except ValueError:
             return
 
@@ -179,20 +184,30 @@ class SerialBridge(Node):
         imu.header.stamp    = self.get_clock().now().to_msg()
         imu.header.frame_id = 'base_link'
 
+        # Linear acceleration (gravity already removed by BNO055 onboard fusion)
         imu.linear_acceleration.x = ax
         imu.linear_acceleration.y = ay
         imu.linear_acceleration.z = az
 
+        # Angular velocity
         imu.angular_velocity.x = gx
         imu.angular_velocity.y = gy
         imu.angular_velocity.z = gz
 
-        # Orientation unknown from raw IMU (no fusion yet)
-        imu.orientation_covariance[0] = -1.0  # signals "not provided"
+        # Absolute orientation quaternion from BNO055 fusion
+        imu.orientation.w = qw
+        imu.orientation.x = qx
+        imu.orientation.y = qy
+        imu.orientation.z = qz
 
-        imu.linear_acceleration_covariance[0]  = 0.01
-        imu.linear_acceleration_covariance[4]  = 0.01
-        imu.linear_acceleration_covariance[8]  = 0.01
+        # BNO055 fused orientation — small covariance (reliable)
+        imu.orientation_covariance[0] = 0.002
+        imu.orientation_covariance[4] = 0.002
+        imu.orientation_covariance[8] = 0.002
+
+        imu.linear_acceleration_covariance[0] = 0.01
+        imu.linear_acceleration_covariance[4] = 0.01
+        imu.linear_acceleration_covariance[8] = 0.01
 
         imu.angular_velocity_covariance[0] = 0.001
         imu.angular_velocity_covariance[4] = 0.001
