@@ -17,7 +17,7 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 | Microcontroller | Arduino Mega (unofficial, CH340 chip) |
 | Lidar | RPLidar C1 |
 | Motor Driver | Cytron MDD20A |
-| IMU | MPU6050 clone at I2C address 0x70 |
+| IMU | MPU6050 clone — I2C address **0x68**, WHO_AM_I returns **0x70** |
 | Encoders | E6B2-CWZ6C 600P/R |
 
 **Wiring:**
@@ -32,16 +32,16 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 - Motor gear 9T → Wheel gear 32T
 - Counts per wheel rev = 600 × 4 × (32/9) ≈ 8533.33
 - Wheel diameter = 200mm, circumference = 628.3mm
-- Wheelbase (from SolidWorks CAD) = 0.445m (user originally said 400mm but CAD shows 445mm)
+- Wheelbase (from SolidWorks CAD) = 0.445m
 
 **USB device names (udev rules set, permanent):**
-- Arduino Mega  → `/dev/ttyUSBArduinoMega`  (was ttyUSB0, VID=1a86, PID=7523, CH340)
-- RPLidar C1    → `/dev/ttyUSBlidar`         (was ttyUSB1, VID=10c4, PID=ea60, CP2102N)
+- Arduino Mega  → `/dev/ttyUSBArduinoMega`  (ttyUSB0, VID=1a86, PID=7523, CH340)
+- RPLidar C1    → `/dev/ttyUSBlidar`         (ttyUSB1, VID=10c4, PID=ea60, CP2102N)
 - udev rule file: `/etc/udev/rules.d/99-agv.rules` on RPi
 
 **Network access:**
 - RPi IP: 192.168.137.50, user: yaman, password: 12345678
-- SSH key already set up: `ssh -i ~/.ssh/id_rpi yaman@192.168.137.50`
+- SSH key set up: `ssh -i ~/.ssh/id_rpi yaman@192.168.137.50`
 - alias `rpi` = ssh to RPi, `pimount` = sshfs mount to ~/pi
 
 ---
@@ -49,33 +49,33 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 ## Repository Structure
 
 ```
-~/yaman_capstone/                        ← on RPi at /home/yaman/yaman_capstone/
-                                           mounted on VM at /home/yaman/pi/yaman_capstone/
+~/yaman_capstone/                        ← RPi: /home/yaman/yaman_capstone/
+                                           VM:  /home/yaman/pi/yaman_capstone/
 ├── CLAUDE.md                            ← this file
-├── yamancode.cpp                        ← Arduino Mega firmware (upload via Arduino IDE)
-├── install_ros2.sh                      ← ROS2 Jazzy install script (already run on RPi)
+├── yamancode.cpp                        ← Arduino Mega firmware
+├── install_ros2.sh                      ← ROS2 Jazzy install script (already run)
 └── robot_ws/
     └── src/
-        ├── agv/                         ← Robot URDF package (converted from SolidWorks ROS1→ROS2)
-        │   ├── urdf/agv.urdf            ← URDF with base_footprint, base_link, laser_frame, wheels
-        │   ├── meshes/                  ← STL files from SolidWorks
+        ├── agv/                         ← URDF package (SolidWorks → ROS2)
+        │   ├── urdf/agv.urdf            ← base_footprint, base_link, laser_frame, wheels
+        │   ├── meshes/                  ← STL files
         │   ├── launch/display.launch.py
-        │   ├── package.xml              ← ament_cmake, ROS2
-        │   └── CMakeLists.txt           ← ament_cmake
-        ├── sllidar_ros2/                ← Cloned from Slamtec GitHub (built from source, not in apt)
+        │   ├── package.xml              ← ament_cmake
+        │   └── CMakeLists.txt
+        ├── sllidar_ros2/                ← Cloned from Slamtec GitHub (built from source)
         └── robot_controller/            ← Main ROS2 Python package
             ├── robot_controller/
             │   ├── __init__.py
-            │   └── serial_bridge.py     ← KEY FILE: Arduino↔ROS2 bridge node
+            │   └── serial_bridge.py     ← Arduino↔ROS2 bridge node
             ├── launch/
-            │   ├── bringup.launch.py    ← robot_state_publisher + serial_bridge + sllidar_ros2
-            │   ├── slam.launch.py       ← bringup + slam_toolbox (for mapping)
-            │   ├── nav2.launch.py       ← bringup + Nav2 (for navigation, needs saved map)
-            │   └── rviz.launch.py       ← RViz2 (run on VM, not RPi)
+            │   ├── bringup.launch.py    ← robot_state_publisher + serial_bridge + sllidar
+            │   ├── slam.launch.py       ← bringup + slam_toolbox
+            │   ├── nav2.launch.py       ← bringup + Nav2 (needs saved map)
+            │   └── rviz.launch.py       ← RViz2 (run on VM)
             ├── config/
-            │   ├── slam_params.yaml     ← slam_toolbox config, saves map to ~/agv_map
-            │   ├── nav2_params.yaml     ← Nav2 full config (AMCL, DWB, costmaps, etc.)
-            │   └── agv.rviz             ← RViz2 config (map, scan, odom, TF, robot model)
+            │   ├── slam_params.yaml     ← slam_toolbox, saves map to ~/agv_map
+            │   ├── nav2_params.yaml     ← Nav2 full config
+            │   └── agv.rviz             ← RViz2 config
             ├── setup.py                 ← entry_point: serial_bridge
             └── package.xml
 ```
@@ -84,40 +84,41 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 
 ## Arduino Firmware (`yamancode.cpp`)
 
-- **Library needed:** MPU6050 by Electronic Cats (search "MPU6050" in Arduino Library Manager)
-- **IMU address:** 0x70 (unusual — device is a clone, registers match MPU6050)
-- **IMU status:** `ERR:IMU_NOT_FOUND` — library cannot connect at 0x70. IMU skipped for now.
-  - Robot works without IMU — SLAM uses lidar + odometry only
+- **Library:** MPU6050 by Electronic Cats (Arduino Library Manager)
+- **IMU address:** `0x68` (clone returns WHO_AM_I=0x70 — skip `testConnection()`, just use `initialize()`)
 - **Serial protocol (115200 baud):**
-  - Receive: `V:<vx>,<wz>\n` — velocity in m/s and rad/s from ROS2
-  - Send:    `O:<x>,<y>,<th>,<vl>,<vr>\n` — odometry at 50Hz
-  - Send:    `I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\n` — IMU at 50Hz (only if IMU found)
-- **Keyboard teleop chars** (send single char over serial): `i`=fwd, `,`=back, `j`=left, `l`=right, `k`=stop
-- **PID velocity control** per wheel (gains: Kp=150, Ki=80, Kd=3 — need tuning on real robot)
+  - Receive: `V:<vx>,<wz>\n` — velocity m/s and rad/s
+  - Send: `O:<x>,<y>,<th>,<vl>,<vr>\n` — odometry 50Hz
+  - Send: `I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\n` — IMU 50Hz
+- **Keyboard teleop:** `i`=fwd, `,`=back, `j`=left, `l`=right, `k`=stop, `+/-`=speed
+- **PID velocity control** per wheel (Kp=150, Ki=80, Kd=3 — needs tuning)
 - **Watchdog:** stops motors if no command for 500ms
-- **Odometry confirmed working** — O: lines streaming at 50Hz, values change with wheel movement
+
+**IMU fix history:**
+- Device at 0x68, WHO_AM_I = 0x70 (not standard 0x68)
+- `testConnection()` fails because it compares WHO_AM_I to 0x68
+- Fix: skip `testConnection()`, call `initialize()` directly, set `imu_ok = true`
+- After fix: Serial Monitor shows `INFO:IMU_OK` + `I:` lines ✅
 
 ---
 
 ## Serial Bridge Node (`serial_bridge.py`)
 
-Runs on RPi. Bridges Arduino serial ↔ ROS2:
 - Subscribes `/cmd_vel` → sends `V:<vx>,<wz>\n` to Arduino
-- Reads `O:` lines → publishes `nav_msgs/Odometry` on `/odom` + broadcasts `odom→base_footprint` TF
-- Reads `I:` lines → publishes `sensor_msgs/Imu` on `/imu/data`
-- Default serial port: `/dev/ttyUSBArduinoMega`
+- Reads `O:` → publishes `nav_msgs/Odometry` on `/odom` + `odom→base_footprint` TF
+- Reads `I:` → publishes `sensor_msgs/Imu` on `/imu/data`
+- Watchdog: sends `V:0,0` if no /cmd_vel for 500ms
+- Debug logging: logs every 50 odom messages received
+- Port: `/dev/ttyUSBArduinoMega`
 
 ---
 
 ## Lidar
 
-- Package: **sllidar_ros2** (built from source in robot_ws/src/sllidar_ros2)
-  - `rplidar_ros` from apt does NOT work with C1 (error: `Cannot start scan: 80008002`)
-  - `sllidar_ros2` confirmed working — user tested and saw scan in RViz2
-- Launch node: `sllidar_node` from `sllidar_ros2` package
-- Port: `/dev/ttyUSBlidar`, baudrate: 460800, scan_mode: `Standard`
-- Frame ID: `laser_frame` (matches URDF)
-- Publishes: `/scan`
+- Package: **sllidar_ros2** (built from source — `rplidar_ros` from apt fails on C1)
+- Port: `/dev/ttyUSBlidar`, baudrate: 460800, scan_mode: `Standard`, frame: `laser_frame`
+- **Current issue:** `SL_RESULT_OPERATION_TIMEOUT` — sllidar_node crashes on startup
+- **Next debug step:** Check if lidar is spinning when bringup starts, try different scan_mode or baudrate
 
 ---
 
@@ -125,91 +126,93 @@ Runs on RPi. Bridges Arduino serial ↔ ROS2:
 
 ```
 odom
- └── base_footprint      ← published by serial_bridge (dynamic, from odometry)
-      └── base_link       ← published by robot_state_publisher (fixed, from URDF, z=+0.213m)
+ └── base_footprint      ← serial_bridge (dynamic, odometry)
+      └── base_link       ← robot_state_publisher (fixed, z=+0.213m)
            ├── link_R     ← right wheel
            ├── Link_L     ← left wheel
-           └── laser_frame ← RPLidar C1 (fixed, z=+0.041m above base_link)
+           └── laser_frame ← RPLidar C1 (fixed, z=+0.041m)
 ```
 
 ---
 
-## ROS2 Setup on RPi
+## ROS2 Setup
 
-- ROS2 Jazzy installed ✅
+**RPi:**
+- ROS2 Jazzy ✅
 - Workspace: `~/yaman_capstone/robot_ws/`
 - All packages built: agv, robot_controller, sllidar_ros2 ✅
-- `~/.bashrc` sources the workspace automatically ✅
-- Installed packages: slam_toolbox, nav2_bringup, rplidar_ros (unused), teleop_twist_keyboard, python3-serial
+- `~/.bashrc` auto-sources workspace ✅
 
----
-
-## ROS2 Setup on VM
-
-- ROS2 Jazzy installed ✅
-- Workspace: `~/pi/yaman_capstone/robot_ws/` (sshfs mount of RPi)
-- Build: `cd ~/pi/yaman_capstone/robot_ws && colcon build` (done)
+**VM:**
+- ROS2 Jazzy ✅
+- Workspace: `~/pi/yaman_capstone/robot_ws/` (sshfs mount)
 - Source: `source ~/pi/yaman_capstone/robot_ws/install/setup.bash`
-- Note: VM does NOT have sllidar_ros2 built — run `colcon build` on VM too after any changes
 
 ---
 
 ## Current Status
 
-### ✅ Working
-- Arduino odometry (`O:` lines) streaming at 50Hz, values change with movement
-- Serial bridge opens Arduino port successfully
+### ✅ Confirmed Working
+- Arduino odometry `O:` lines streaming at 50Hz
+- Arduino IMU `I:` lines streaming at 50Hz (after fix)
+- Serial bridge opens port, thread starts
 - robot_state_publisher running
-- udev symlinks (`/dev/ttyUSBArduinoMega`, `/dev/ttyUSBlidar`) permanent
-- sllidar_ros2 built and confirmed working (user saw scan in RViz2)
-- bringup.launch.py updated to use sllidar_ros2
+- udev symlinks permanent
+- sllidar_ros2 built successfully
 
-### ❌ Problem 1: /odom not publishing to ROS topics
-- `ros2 topic info /odom` shows Publisher count: 1 (bridge IS registered)
-- But `ros2 topic echo /odom` times out — no messages flowing
-- Arduino IS sending O: lines (confirmed via direct python3 serial test)
-- **Suspected cause:** serial_bridge read thread issue — thread may be blocked or not calling publish correctly
-- **Next debug step:** Add logger prints inside `_handle_odom`, check if thread is alive, check rclpy threading
+### ❌ Problem 1: `/odom` not publishing to ROS2
+- Serial bridge opens port and thread starts
+- But `ros2 topic echo /odom` times out — no messages
+- Arduino IS sending data (confirmed via Serial Monitor)
+- **Root cause suspected:** Multiple serial_bridge instances were splitting data before — need to confirm this is now fixed after killing all old processes
+- **Next debug step:** Kill ALL ros2 processes, run ONE clean bringup, check `/tmp/bringup.log` for "Odom published x50" messages from serial_bridge debug logging
 
-### ❌ Problem 2: IMU not working
-- Device at 0x70 does not respond to MPU6050 library commands
-- Skipped for now — not needed for SLAM/Nav2
+### ❌ Problem 2: sllidar_node timeout crash
+- Error: `SL_RESULT_OPERATION_TIMEOUT` — node exits with code 255
+- **Next debug step:** Check if lidar is physically spinning, try `scan_mode: 'DenseBoost'` or baudrate 115200
+
+### ✅ Problem 3: IMU — SOLVED
+- Was: `testConnection()` fails because clone WHO_AM_I=0x70 ≠ 0x68
+- Fix: skip `testConnection()`, hardcode `imu_ok = true` after `initialize()`
 
 ---
 
 ## Run Commands
 
 ```bash
-# On RPi — bringup (serial bridge + lidar + robot_state_publisher)
+# RPi — bringup
 ros2 launch robot_controller bringup.launch.py
 
-# On RPi — SLAM mapping (drive around to build map)
+# RPi — SLAM mapping
 ros2 launch robot_controller slam.launch.py
 
-# On RPi — Navigation with saved map
+# RPi — Nav2 navigation
 ros2 launch robot_controller nav2.launch.py
 
-# On VM — RViz2 visualization
+# VM — RViz2
 source ~/pi/yaman_capstone/robot_ws/install/setup.bash
 ros2 launch robot_controller rviz.launch.py
 
-# Teleop keyboard (any machine)
+# Teleop
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
-# Rebuild workspace — RPi
+# Rebuild — RPi
 cd ~/yaman_capstone/robot_ws && colcon build
 
-# Rebuild workspace — VM
+# Rebuild — VM
 cd ~/pi/yaman_capstone/robot_ws && colcon build
+
+# Kill all ROS processes (use before clean start)
+kill -9 $(ps aux | grep -E 'serial_bridge|sllidar|robot_state|ros2' | grep -v grep | awk '{print $2}') 2>/dev/null
 ```
 
 ---
 
 ## Priority Fix Order for Next Session
 
-1. **Fix /odom not publishing** — debug serial_bridge read thread, add logger output inside `_handle_odom`
-2. **First full bringup test** — verify /odom and /scan both publish, check TF tree in RViz
-3. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd
-4. **SLAM mapping** — drive around, build and save map to ~/agv_map
-5. **Nav2 navigation** — set goal in RViz, verify autonomous navigation
-6. **IMU (optional)** — investigate actual chip at 0x70, may need different library
+1. **Fix /odom not publishing** — kill all processes, run clean bringup, check `/tmp/bringup.log` for "Odom published x50"
+2. **Fix sllidar timeout** — check lidar is spinning, try `scan_mode: 'DenseBoost'`
+3. **First full test** — verify `/odom` and `/scan` both publishing, check TF in RViz2
+4. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd
+5. **SLAM mapping** — drive around, save map to `~/agv_map`
+6. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
