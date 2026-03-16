@@ -40,7 +40,7 @@ sudo apt install -y \
     python3-pip
 
 echo "=== [5/6] Install Python serial library (for Arduino serial bridge) ==="
-pip3 install pyserial
+sudo apt install -y python3-serial
 
 echo "=== [6/6] Source ROS2 in bashrc ==="
 grep -qxF 'source /opt/ros/jazzy/setup.bash' ~/.bashrc || \

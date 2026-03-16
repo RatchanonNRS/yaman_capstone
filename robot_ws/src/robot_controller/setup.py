@@ -10,6 +10,15 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch',
+            ['launch/bringup.launch.py',
+             'launch/slam.launch.py',
+             'launch/nav2.launch.py',
+             'launch/rviz.launch.py']),
+        ('share/' + package_name + '/config',
+            ['config/slam_params.yaml',
+             'config/nav2_params.yaml',
+             'config/agv.rviz']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,6 +33,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'serial_bridge = robot_controller.serial_bridge:main',
         ],
     },
 )
