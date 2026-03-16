@@ -1,6 +1,6 @@
 """
 bringup.launch.py — Run on RPi
-Starts: robot_state_publisher + serial_bridge + RPLidar C1
+Starts: robot_state_publisher + serial_bridge + RPLidar C1 (via sllidar_ros2)
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -34,17 +34,19 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # RPLidar C1 — publishes /scan on frame laser_frame
+        # RPLidar C1 via sllidar_ros2 — publishes /scan on frame laser_frame
         Node(
-            name='rplidar',
-            package='rplidar_ros',
-            executable='rplidar_composition',
+            name='sllidar_node',
+            package='sllidar_ros2',
+            executable='sllidar_node',
             parameters=[{
+                'channel_type': 'serial',
                 'serial_port': '/dev/ttyUSBlidar',
                 'serial_baudrate': 460800,
                 'frame_id': 'laser_frame',
                 'inverted': False,
                 'angle_compensate': True,
+                'scan_mode': 'Standard',
             }],
             output='screen',
         ),

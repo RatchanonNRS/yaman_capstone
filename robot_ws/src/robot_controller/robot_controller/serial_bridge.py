@@ -91,6 +91,8 @@ class SerialBridge(Node):
 
     # ── Serial read loop (runs in background thread) ─────────────────────────
     def _read_loop(self):
+        self.get_logger().info('Serial read thread started')
+        count = 0
         while rclpy.ok():
             try:
                 raw = self.ser.readline()
@@ -103,9 +105,12 @@ class SerialBridge(Node):
 
             if line.startswith('O:'):
                 self._handle_odom(line[2:])
+                count += 1
+                if count % 50 == 0:  # log every 50 messages (~1 sec)
+                    self.get_logger().info(f'Odom published x{count}: {line}')
             elif line.startswith('I:'):
                 self._handle_imu(line[2:])
-            elif line.startswith('ERR:'):
+            elif line.startswith('ERR:') or line.startswith('INFO:'):
                 self.get_logger().warn(f'Arduino: {line}')
 
     # ── Parse odometry line and publish ─────────────────────────────────────

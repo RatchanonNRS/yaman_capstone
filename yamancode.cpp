@@ -90,8 +90,8 @@ void enc_left_b()  { digitalRead(ENC_L_A) == digitalRead(ENC_L_B) ? enc_left++  
 void enc_right_a() { digitalRead(ENC_R_A) == digitalRead(ENC_R_B) ? enc_right++ : enc_right--; }
 void enc_right_b() { digitalRead(ENC_R_A) == digitalRead(ENC_R_B) ? enc_right-- : enc_right++; }
 
-// ── IMU (MPU6050 at 0x70) ─────────────────────────────────────────────────────
-MPU6050 mpu(0x70);
+// ── IMU (MPU6050 clone, I2C address 0x68, WHO_AM_I returns 0x70) ─────────────
+MPU6050 mpu(0x68);
 bool imu_ok = false;
 
 // MPU6050 conversion constants (default ranges)
