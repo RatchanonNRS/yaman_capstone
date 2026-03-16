@@ -150,30 +150,45 @@ odom
 
 ---
 
+## Bug Fixes Applied (Session 2 — 2026-03-16)
+
+### Fix 1: sllidar `SL_RESULT_OPERATION_TIMEOUT` — SOLVED
+- **Root cause:** Stale `sllidar_node` process from a previous failed launch was holding `/dev/ttyUSBlidar`
+- **Fix:** Kill all stale ROS2 processes before bringup
+- **Confirmed:** `sllidar_node` runs, gets device info, publishes `/scan` at 10Hz ✅
+
+### Fix 2: `/odom` not publishing — SOLVED
+- **Root cause:** pyserial 3.5 (Ubuntu 24.04 system package) has a thread-safety bug on Python 3.12
+  - Concurrent `readline()` in read thread + `write()` in watchdog timer → `TypeError: 'NoneType' object cannot be interpreted as an integer`
+  - The crash killed the read thread silently
+- **Fix:** Rewrote `serial_bridge.py` to use a command queue:
+  - Single serial thread handles ALL serial I/O (reads AND writes)
+  - ROS callbacks (`/cmd_vel`, watchdog timer) put commands in `queue.Queue`
+  - Serial thread drains queue before each readline — no concurrent access
+- **File:** `robot_ws/src/robot_controller/robot_controller/serial_bridge.py`
+- **Confirmed:** `/odom` publishes at 49.5Hz, `/imu/data` at 49.5Hz ✅
+
+### Hardware Note: USB cable
+- Arduino USB cable was intermittently loose during session — caused `/odom` to drop out
+- **Action needed:** Secure the Arduino USB cable (zip tie or strain relief)
+- Power supply warning ("not capable of supplying 5A") still shows with mini560 — Pi 5 requires USB PD negotiation; mini560 may not signal PD properly. USB peripheral power may be restricted.
+
+---
+
 ## Current Status
 
-### ✅ Confirmed Working
-- Arduino odometry `O:` lines streaming at 50Hz
-- Arduino IMU `I:` lines streaming at 50Hz (after fix)
-- Serial bridge opens port, thread starts
-- robot_state_publisher running
-- udev symlinks permanent
-- sllidar_ros2 built successfully
+### ✅ ALL SENSORS WORKING (verified 2026-03-16)
+- `/scan` publishing at 10Hz — RPLidar C1, Standard mode, 16m range ✅
+- `/odom` publishing at ~50Hz — Arduino encoder odometry ✅
+- `/imu/data` publishing at ~50Hz — MPU6050 accelerometer + gyro ✅
+- `/tf` tree publishing — odom→base_footprint→base_link→laser_frame ✅
+- `robot_state_publisher` running ✅
+- `udev symlinks` permanent ✅
 
-### ❌ Problem 1: `/odom` not publishing to ROS2
-- Serial bridge opens port and thread starts
-- But `ros2 topic echo /odom` times out — no messages
-- Arduino IS sending data (confirmed via Serial Monitor)
-- **Root cause suspected:** Multiple serial_bridge instances were splitting data before — need to confirm this is now fixed after killing all old processes
-- **Next debug step:** Kill ALL ros2 processes, run ONE clean bringup, check `/tmp/bringup.log` for "Odom published x50" messages from serial_bridge debug logging
-
-### ❌ Problem 2: sllidar_node timeout crash
-- Error: `SL_RESULT_OPERATION_TIMEOUT` — node exits with code 255
-- **Next debug step:** Check if lidar is physically spinning, try `scan_mode: 'DenseBoost'` or baudrate 115200
-
-### ✅ Problem 3: IMU — SOLVED
-- Was: `testConnection()` fails because clone WHO_AM_I=0x70 ≠ 0x68
-- Fix: skip `testConnection()`, hardcode `imu_ok = true` after `initialize()`
+### ⚠️ Known Issues
+- **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
+- **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
+- **PID tuning:** Kp=150, Ki=80, Kd=3 — not yet tested with real motor movement
 
 ---
 
@@ -208,11 +223,9 @@ kill -9 $(ps aux | grep -E 'serial_bridge|sllidar|robot_state|ros2' | grep -v gr
 
 ---
 
-## Priority Fix Order for Next Session
+## Priority for Next Session
 
-1. **Fix /odom not publishing** — kill all processes, run clean bringup, check `/tmp/bringup.log` for "Odom published x50"
-2. **Fix sllidar timeout** — check lidar is spinning, try `scan_mode: 'DenseBoost'`
-3. **First full test** — verify `/odom` and `/scan` both publishing, check TF in RViz2
-4. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd
-5. **SLAM mapping** — drive around, save map to `~/agv_map`
-6. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
+1. **First full robot test** — run bringup, open RViz2 on VM, verify TF tree and sensor data visually
+2. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd in `yamancode.cpp`
+3. **SLAM mapping** — drive around, save map to `~/agv_map`
+4. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation

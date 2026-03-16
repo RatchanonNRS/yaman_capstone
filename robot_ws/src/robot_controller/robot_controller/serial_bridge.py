@@ -17,7 +17,9 @@ ROS2 parameters (set in launch file or command line):
 """
 
 import math
+import queue
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -42,13 +44,16 @@ class SerialBridge(Node):
         port = self.get_parameter('serial_port').get_parameter_value().string_value
         baud = self.get_parameter('baud_rate').get_parameter_value().integer_value
 
-        # ── Serial port ─────────────────────────────────────────────────────
+        # ── Serial port (timeout=1 for blocking readline) ────────────────────
         try:
             self.ser = serial.Serial(port, baud, timeout=1.0)
             self.get_logger().info(f'Opened serial port {port} at {baud} baud')
         except serial.SerialException as e:
             self.get_logger().fatal(f'Cannot open serial port {port}: {e}')
             raise SystemExit(1)
+
+        # ── Command queue: ROS callbacks → serial thread ─────────────────────
+        self._cmd_queue = queue.Queue()
 
         # ── Publishers ──────────────────────────────────────────────────────
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -59,55 +64,67 @@ class SerialBridge(Node):
         # ── Subscriber ──────────────────────────────────────────────────────
         self.cmd_sub = self.create_subscription(
             Twist, '/cmd_vel', self._cmd_vel_cb, 10)
-        self._last_cmd_time = self.get_clock().now()
+        self._last_cmd_time = time.monotonic()
 
         # ── Watchdog timer (10 Hz) ───────────────────────────────────────────
         self.create_timer(0.1, self._watchdog_cb)
 
-        # ── Background reader thread ─────────────────────────────────────────
-        self._read_thread = threading.Thread(
-            target=self._read_loop, daemon=True)
-        self._read_thread.start()
+        # ── Serial thread: ALL serial I/O runs here ──────────────────────────
+        self._stop_serial = False
+        self._serial_thread = threading.Thread(
+            target=self._serial_loop, daemon=True)
+        self._serial_thread.start()
 
-    # ── /cmd_vel callback ────────────────────────────────────────────────────
+        self._odom_count = 0
+        self.get_logger().info('Serial bridge ready')
+
+    # ── /cmd_vel callback — puts command in queue ────────────────────────────
     def _cmd_vel_cb(self, msg: Twist):
         vx = msg.linear.x
         wz = msg.angular.z
-        line = f'V:{vx:.4f},{wz:.4f}\n'
-        try:
-            self.ser.write(line.encode())
-        except serial.SerialException as e:
-            self.get_logger().error(f'Serial write error: {e}')
-        self._last_cmd_time = self.get_clock().now()
+        self._cmd_queue.put(f'V:{vx:.4f},{wz:.4f}\n'.encode())
+        self._last_cmd_time = time.monotonic()
 
-    # ── Watchdog — stop robot if /cmd_vel goes silent ────────────────────────
+    # ── Watchdog — sends stop if /cmd_vel goes silent ────────────────────────
     def _watchdog_cb(self):
-        elapsed = (self.get_clock().now() - self._last_cmd_time).nanoseconds * 1e-9
-        if elapsed > 0.5:
-            try:
-                self.ser.write(b'V:0.0000,0.0000\n')
-            except serial.SerialException:
-                pass
+        if time.monotonic() - self._last_cmd_time > 0.5:
+            self._cmd_queue.put(b'V:0.0000,0.0000\n')
 
-    # ── Serial read loop (runs in background thread) ─────────────────────────
-    def _read_loop(self):
-        self.get_logger().info('Serial read thread started')
-        count = 0
-        while rclpy.ok():
+    # ── Serial loop — ONLY thread that touches self.ser ─────────────────────
+    def _serial_loop(self):
+        self.get_logger().info('Serial thread started')
+        buf = b''
+        while not self._stop_serial:
+            # 1. Drain the command queue (writes)
+            while True:
+                try:
+                    cmd = self._cmd_queue.get_nowait()
+                    self.ser.write(cmd)
+                except queue.Empty:
+                    break
+                except serial.SerialException as e:
+                    self.get_logger().error(f'Serial write error: {e}')
+
+            # 2. Read available bytes (blocking up to 1s via readline)
             try:
                 raw = self.ser.readline()
-                if not raw:
-                    continue
-                line = raw.decode('ascii', errors='ignore').strip()
-            except serial.SerialException as e:
+            except (serial.SerialException, TypeError, OSError) as e:
                 self.get_logger().error(f'Serial read error: {e}')
+                time.sleep(0.1)
+                continue
+
+            if not raw:
+                continue
+
+            line = raw.decode('ascii', errors='ignore').strip()
+            if not line:
                 continue
 
             if line.startswith('O:'):
                 self._handle_odom(line[2:])
-                count += 1
-                if count % 50 == 0:  # log every 50 messages (~1 sec)
-                    self.get_logger().info(f'Odom published x{count}: {line}')
+                self._odom_count += 1
+                if self._odom_count % 50 == 0:
+                    self.get_logger().info(f'Odom published x{self._odom_count}: {line}')
             elif line.startswith('I:'):
                 self._handle_imu(line[2:])
             elif line.startswith('ERR:') or line.startswith('INFO:'):
@@ -122,13 +139,10 @@ class SerialBridge(Node):
 
         now = self.get_clock().now().to_msg()
 
-        # Linear and angular velocity from wheel velocities
-        # v = (vr + vl) / 2,  w = (vr - vl) / wheelbase
         wheelbase = 0.445
         v_linear  = (vr + vl) / 2.0
         v_angular = (vr - vl) / wheelbase
 
-        # Odometry message
         odom = Odometry()
         odom.header.stamp    = now
         odom.header.frame_id = 'odom'
@@ -138,7 +152,6 @@ class SerialBridge(Node):
         odom.pose.pose.position.y = y
         odom.pose.pose.position.z = 0.0
 
-        # Convert yaw to quaternion (rotation around Z)
         odom.pose.pose.orientation.x = 0.0
         odom.pose.pose.orientation.y = 0.0
         odom.pose.pose.orientation.z = math.sin(th / 2.0)
@@ -147,21 +160,18 @@ class SerialBridge(Node):
         odom.twist.twist.linear.x  = v_linear
         odom.twist.twist.angular.z = v_angular
 
-        # Pose covariance diagonal (x, y, z, roll, pitch, yaw)
-        odom.pose.covariance[0]  = 0.001   # x
-        odom.pose.covariance[7]  = 0.001   # y
-        odom.pose.covariance[14] = 1e6     # z  (2D robot, unknown)
-        odom.pose.covariance[21] = 1e6     # roll
-        odom.pose.covariance[28] = 1e6     # pitch
-        odom.pose.covariance[35] = 0.01    # yaw
+        odom.pose.covariance[0]  = 0.001
+        odom.pose.covariance[7]  = 0.001
+        odom.pose.covariance[14] = 1e6
+        odom.pose.covariance[21] = 1e6
+        odom.pose.covariance[28] = 1e6
+        odom.pose.covariance[35] = 0.01
 
-        # Twist covariance
         odom.twist.covariance[0]  = 0.001
         odom.twist.covariance[35] = 0.01
 
         self.odom_pub.publish(odom)
 
-        # TF: odom → base_footprint
         tf = TransformStamped()
         tf.header.stamp    = now
         tf.header.frame_id = 'odom'
@@ -177,7 +187,6 @@ class SerialBridge(Node):
 
     # ── Parse IMU line and publish ────────────────────────────────────────────
     def _handle_imu(self, payload: str):
-        # Format: ax,ay,az,gx,gy,gz  (6 fields from MPU6050)
         try:
             ax, ay, az, gx, gy, gz = [float(v) for v in payload.split(',')]
         except ValueError:
@@ -187,17 +196,14 @@ class SerialBridge(Node):
         imu.header.stamp    = self.get_clock().now().to_msg()
         imu.header.frame_id = 'base_link'
 
-        # Accelerometer (includes gravity — no onboard fusion on MPU6050)
         imu.linear_acceleration.x = ax
         imu.linear_acceleration.y = ay
         imu.linear_acceleration.z = az
 
-        # Angular velocity
         imu.angular_velocity.x = gx
         imu.angular_velocity.y = gy
         imu.angular_velocity.z = gz
 
-        # Orientation not provided (MPU6050 has no fusion)
         imu.orientation_covariance[0] = -1.0
 
         imu.linear_acceleration_covariance[0] = 0.01
@@ -219,10 +225,17 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.ser.write(b'V:0.0000,0.0000\n')
-        node.ser.close()
+        node._stop_serial = True
+        try:
+            node.ser.write(b'V:0.0000,0.0000\n')
+            node.ser.close()
+        except Exception:
+            pass
         node.destroy_node()
-        rclpy.shutdown()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':
