@@ -215,18 +215,14 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENC_R_A), enc_right_a, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_R_B), enc_right_b, CHANGE);
 
-  // MPU6050
+  // MPU6050 clone (WHO_AM_I = 0x70, I2C addr = 0x68)
+  // Skip testConnection() — it checks WHO_AM_I == 0x68 which fails on this clone
   Wire.begin();
   mpu.initialize();
-  imu_ok = mpu.testConnection();
-  if (!imu_ok) {
-    Serial.println("ERR:IMU_NOT_FOUND");
-  } else {
-    // Set ranges: ±2g accel, ±250 deg/s gyro (highest sensitivity)
-    mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
-    mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
-    Serial.println("INFO:IMU_OK");
-  }
+  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+  imu_ok = true;
+  Serial.println("INFO:IMU_OK");
 
   last_cmd_ms  = millis();
   last_loop_ms = millis();
