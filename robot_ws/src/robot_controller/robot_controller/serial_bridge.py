@@ -2,11 +2,10 @@
 serial_bridge.py — ROS2 node that bridges Arduino Mega ↔ ROS2
 
   Arduino → RPi  (parsed here):
-    "O:<x>,<y>,<th>,<vl>,<vr>\\n"                          → nav_msgs/Odometry + odom→base_footprint TF
-    "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<qw>,<qx>,<qy>,<qz>\\n" → sensor_msgs/Imu  (BNO055 fusion)
-       ax/ay/az  = linear accel m/s²  (gravity removed by BNO055)
+    "O:<x>,<y>,<th>,<vl>,<vr>\\n"           → nav_msgs/Odometry + odom→base_footprint TF
+    "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\\n"    → sensor_msgs/Imu  (MPU6050 raw)
+       ax/ay/az  = accelerometer m/s²  (includes gravity)
        gx/gy/gz  = angular velocity rad/s
-       qw/qx/qy/qz = absolute orientation quaternion from BNO055
 
   RPi → Arduino  (sent here):
     /cmd_vel (Twist) → "V:<vx>,<wz>\\n"
@@ -173,10 +172,9 @@ class SerialBridge(Node):
 
     # ── Parse IMU line and publish ────────────────────────────────────────────
     def _handle_imu(self, payload: str):
-        # Format: ax,ay,az,gx,gy,gz,qw,qx,qy,qz  (10 fields from BNO055)
+        # Format: ax,ay,az,gx,gy,gz  (6 fields from MPU6050)
         try:
-            ax, ay, az, gx, gy, gz, qw, qx, qy, qz = [
-                float(v) for v in payload.split(',')]
+            ax, ay, az, gx, gy, gz = [float(v) for v in payload.split(',')]
         except ValueError:
             return
 
@@ -184,7 +182,7 @@ class SerialBridge(Node):
         imu.header.stamp    = self.get_clock().now().to_msg()
         imu.header.frame_id = 'base_link'
 
-        # Linear acceleration (gravity already removed by BNO055 onboard fusion)
+        # Accelerometer (includes gravity — no onboard fusion on MPU6050)
         imu.linear_acceleration.x = ax
         imu.linear_acceleration.y = ay
         imu.linear_acceleration.z = az
@@ -194,16 +192,8 @@ class SerialBridge(Node):
         imu.angular_velocity.y = gy
         imu.angular_velocity.z = gz
 
-        # Absolute orientation quaternion from BNO055 fusion
-        imu.orientation.w = qw
-        imu.orientation.x = qx
-        imu.orientation.y = qy
-        imu.orientation.z = qz
-
-        # BNO055 fused orientation — small covariance (reliable)
-        imu.orientation_covariance[0] = 0.002
-        imu.orientation_covariance[4] = 0.002
-        imu.orientation_covariance[8] = 0.002
+        # Orientation not provided (MPU6050 has no fusion)
+        imu.orientation_covariance[0] = -1.0
 
         imu.linear_acceleration_covariance[0] = 0.01
         imu.linear_acceleration_covariance[4] = 0.01

@@ -8,7 +8,7 @@
  *   Motor Driver: Cytron MDD20A
  *     Left  PWM→D6,  DIR→D52
  *     Right PWM→D7,  DIR→D53
- *   IMU : BNO055  SCL→D21, SDA→D20  (I2C addr 0x28, or 0x29 if ADR pin high)
+ *   IMU : MPU6050  SCL→D21, SDA→D20  (I2C addr 0x70)
  *
  * Gear train:
  *   Motor gear 9T → Encoder gear 9T (1:1 with motor)
@@ -42,22 +42,18 @@
  *  │   th    in radians (float, 4 dp)                                        │
  *  │   vl,vr actual wheel velocities (m/s, 4 dp)                             │
  *  │                                                                          │
- *  │ "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<qw>,<qx>,<qy>,<qz>\n"  IMU (50 Hz)  │
- *  │   ax,ay,az  linear accel m/s²  (gravity removed by BNO055 fusion)       │
- *  │   gx,gy,gz  angular velocity rad/s                                       │
- *  │   qw,qx,qy,qz  orientation quaternion  (absolute, from BNO055 fusion)   │
+ *  │ "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\n"   IMU (50 Hz)                      │
+ *  │   ax,ay,az  raw accelerometer converted to m/s²                         │
+ *  │   gx,gy,gz  raw gyroscope converted to rad/s                            │
  *  └──────────────────────────────────────────────────────────────────────────┘
  *
- * Requires libraries (install via Arduino Library Manager):
- *   - Adafruit BNO055
- *   - Adafruit Unified Sensor
+ * Requires library (install via Arduino Library Manager):
+ *   - MPU6050 by Electronic Cats  (search "MPU6050")
  */
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BNO055.h>
-#include <utility/imumaths.h>
+#include <MPU6050.h>
 #include <math.h>
 
 // ── Pin definitions ──────────────────────────────────────────────────────────
@@ -72,10 +68,10 @@
 #define MOT_R_DIR 53
 
 // ── Robot geometry ───────────────────────────────────────────────────────────
-constexpr float COUNTS_PER_REV  = 600.0f * 4.0f * (32.0f / 9.0f); // ≈ 8533.33
+constexpr float COUNTS_PER_REV  = 600.0f * 4.0f * (32.0f / 9.0f);
 constexpr float WHEEL_DIAM_M    = 0.200f;
-constexpr float WHEEL_CIRCUM_M  = 3.14159265f * WHEEL_DIAM_M;      // 0.6283 m
-constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV; // ~7.363e-5 m
+constexpr float WHEEL_CIRCUM_M  = 3.14159265f * WHEEL_DIAM_M;
+constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV;
 constexpr float WHEELBASE_M     = 0.445f;
 
 // ── PID gains (tune on real robot) ───────────────────────────────────────────
@@ -94,10 +90,15 @@ void enc_left_b()  { digitalRead(ENC_L_A) == digitalRead(ENC_L_B) ? enc_left++  
 void enc_right_a() { digitalRead(ENC_R_A) == digitalRead(ENC_R_B) ? enc_right++ : enc_right--; }
 void enc_right_b() { digitalRead(ENC_R_A) == digitalRead(ENC_R_B) ? enc_right-- : enc_right++; }
 
-// ── IMU (BNO055) ─────────────────────────────────────────────────────────────
-// ID=55, address=0x28. Change to 0x29 if ADR pin is pulled HIGH.
-Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+// ── IMU (MPU6050 at 0x70) ─────────────────────────────────────────────────────
+MPU6050 mpu(0x70);
 bool imu_ok = false;
+
+// MPU6050 conversion constants (default ranges)
+// Accel: ±2g  → LSB/g = 16384  → m/s² = raw/16384 * 9.80665
+// Gyro:  ±250 deg/s → LSB/(deg/s) = 131 → rad/s = raw/131 * π/180
+constexpr float ACCEL_SCALE = 9.80665f / 16384.0f;
+constexpr float GYRO_SCALE  = (3.14159265f / 180.0f) / 131.0f;
 
 // ── Motor driver ─────────────────────────────────────────────────────────────
 void setMotor(uint8_t pwmPin, uint8_t dirPin, int16_t speed) {
@@ -214,15 +215,16 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENC_R_A), enc_right_a, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_R_B), enc_right_b, CHANGE);
 
-  // BNO055
+  // MPU6050
   Wire.begin();
-  imu_ok = bno.begin();
+  mpu.initialize();
+  imu_ok = mpu.testConnection();
   if (!imu_ok) {
     Serial.println("ERR:IMU_NOT_FOUND");
   } else {
-    // Use NDOF mode: full fusion with accelerometer + gyro + magnetometer
-    bno.setMode(OPERATION_MODE_NDOF);
-    delay(100);
+    // Set ranges: ±2g accel, ±250 deg/s gyro (highest sensitivity)
+    mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+    mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
     Serial.println("INFO:IMU_OK");
   }
 
@@ -302,29 +304,27 @@ void loop() {
   Serial.print(vel_right_actual, 4);
   Serial.print('\n');
 
-  // ── 9. Publish IMU (BNO055) ───────────────────────────────────────────────────
+  // ── 9. Publish IMU (MPU6050) ──────────────────────────────────────────────────
   if (imu_ok) {
-    // Linear acceleration (m/s²) — gravity already removed by BNO055 fusion
-    imu::Vector<3> accel = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+    int16_t ax_r, ay_r, az_r, gx_r, gy_r, gz_r;
+    mpu.getMotion6(&ax_r, &ay_r, &az_r, &gx_r, &gy_r, &gz_r);
 
-    // Angular velocity (rad/s)
-    imu::Vector<3> gyro  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+    // Convert raw to physical units
+    float ax = ax_r * ACCEL_SCALE;
+    float ay = ay_r * ACCEL_SCALE;
+    float az = az_r * ACCEL_SCALE;
+    float gx = gx_r * GYRO_SCALE;
+    float gy = gy_r * GYRO_SCALE;
+    float gz = gz_r * GYRO_SCALE;
 
-    // Orientation quaternion from onboard fusion (absolute, NED frame)
-    imu::Quaternion quat = bno.getQuat();
-
-    // "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<qw>,<qx>,<qy>,<qz>"
+    // "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>"
     Serial.print("I:");
-    Serial.print(accel.x(), 3); Serial.print(',');
-    Serial.print(accel.y(), 3); Serial.print(',');
-    Serial.print(accel.z(), 3); Serial.print(',');
-    Serial.print(gyro.x(),  3); Serial.print(',');
-    Serial.print(gyro.y(),  3); Serial.print(',');
-    Serial.print(gyro.z(),  3); Serial.print(',');
-    Serial.print(quat.w(),  4); Serial.print(',');
-    Serial.print(quat.x(),  4); Serial.print(',');
-    Serial.print(quat.y(),  4); Serial.print(',');
-    Serial.print(quat.z(),  4);
+    Serial.print(ax, 3); Serial.print(',');
+    Serial.print(ay, 3); Serial.print(',');
+    Serial.print(az, 3); Serial.print(',');
+    Serial.print(gx, 3); Serial.print(',');
+    Serial.print(gy, 3); Serial.print(',');
+    Serial.print(gz, 3);
     Serial.print('\n');
   }
 }
