@@ -34,6 +34,7 @@ setup(
     entry_points={
         'console_scripts': [
             'serial_bridge = robot_controller.serial_bridge:main',
+            'imu_node      = robot_controller.imu_node:main',
         ],
     },
 )

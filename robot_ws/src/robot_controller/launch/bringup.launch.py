@@ -23,13 +23,32 @@ def generate_launch_description():
             parameters=[{'robot_description': robot_description}],
         ),
 
-        # Arduino serial bridge — publishes /odom, /imu/data, TF odom→base_footprint
+        # Publishes zero joint states for wheel joints R and L (continuous type)
+        # Required so robot_state_publisher can broadcast link_R and Link_L TF
+        Node(
+            package='joint_state_publisher',
+            executable='joint_state_publisher',
+            parameters=[{'robot_description': robot_description}],
+        ),
+
+        # Arduino serial bridge — publishes /odom, TF odom→base_footprint
         Node(
             package='robot_controller',
             executable='serial_bridge',
             parameters=[{
                 'serial_port': '/dev/ttyUSBArduinoMega',
                 'baud_rate': 115200,
+            }],
+            output='screen',
+        ),
+
+        # MPU6050 via RPi I2C — publishes /imu/data at 50 Hz
+        Node(
+            package='robot_controller',
+            executable='imu_node',
+            parameters=[{
+                'i2c_bus':     1,
+                'i2c_address': 0x68,
             }],
             output='screen',
         ),

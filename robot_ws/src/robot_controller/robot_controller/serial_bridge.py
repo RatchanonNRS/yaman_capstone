@@ -2,14 +2,13 @@
 serial_bridge.py — ROS2 node that bridges Arduino Mega ↔ ROS2
 
   Arduino → RPi  (parsed here):
-    "O:<x>,<y>,<th>,<vl>,<vr>\\n"           → nav_msgs/Odometry + odom→base_footprint TF
-    "I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\\n"    → sensor_msgs/Imu  (MPU6050 raw)
-       ax/ay/az  = accelerometer m/s²  (includes gravity)
-       gx/gy/gz  = angular velocity rad/s
+    "O:<x>,<y>,<th>,<vl>,<vr>\\n"  → nav_msgs/Odometry + odom→base_footprint TF
 
   RPi → Arduino  (sent here):
     /cmd_vel (Twist) → "V:<vx>,<wz>\\n"
     watchdog: sends "V:0,0\\n" if no /cmd_vel for 500 ms
+
+Note: IMU is now read directly from RPi I2C by imu_node.py
 
 ROS2 parameters (set in launch file or command line):
   serial_port   (string, default /dev/ttyUSBArduinoMega)
@@ -23,13 +22,10 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-
 import serial
 
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
 from tf2_ros import TransformBroadcaster
 
 
@@ -56,9 +52,7 @@ class SerialBridge(Node):
         self._cmd_queue = queue.Queue()
 
         # ── Publishers ──────────────────────────────────────────────────────
-        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.odom_pub = self.create_publisher(Odometry,  '/odom', 10)
-        self.imu_pub  = self.create_publisher(Imu,       '/imu/data', qos)
+        self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
         self.tf_br    = TransformBroadcaster(self)
 
         # ── Subscriber ──────────────────────────────────────────────────────
@@ -125,8 +119,6 @@ class SerialBridge(Node):
                 self._odom_count += 1
                 if self._odom_count % 50 == 0:
                     self.get_logger().info(f'Odom published x{self._odom_count}: {line}')
-            elif line.startswith('I:'):
-                self._handle_imu(line[2:])
             elif line.startswith('ERR:') or line.startswith('INFO:'):
                 self.get_logger().warn(f'Arduino: {line}')
 
@@ -184,38 +176,6 @@ class SerialBridge(Node):
         tf.transform.rotation.z = math.sin(th / 2.0)
         tf.transform.rotation.w = math.cos(th / 2.0)
         self.tf_br.sendTransform(tf)
-
-    # ── Parse IMU line and publish ────────────────────────────────────────────
-    def _handle_imu(self, payload: str):
-        try:
-            ax, ay, az, gx, gy, gz = [float(v) for v in payload.split(',')]
-        except ValueError:
-            return
-
-        imu = Imu()
-        imu.header.stamp    = self.get_clock().now().to_msg()
-        imu.header.frame_id = 'base_link'
-
-        imu.linear_acceleration.x = ax
-        imu.linear_acceleration.y = ay
-        imu.linear_acceleration.z = az
-
-        imu.angular_velocity.x = gx
-        imu.angular_velocity.y = gy
-        imu.angular_velocity.z = gz
-
-        imu.orientation_covariance[0] = -1.0
-
-        imu.linear_acceleration_covariance[0] = 0.01
-        imu.linear_acceleration_covariance[4] = 0.01
-        imu.linear_acceleration_covariance[8] = 0.01
-
-        imu.angular_velocity_covariance[0] = 0.001
-        imu.angular_velocity_covariance[4] = 0.001
-        imu.angular_velocity_covariance[8] = 0.001
-
-        self.imu_pub.publish(imu)
-
 
 def main(args=None):
     rclpy.init(args=args)

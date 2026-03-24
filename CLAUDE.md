@@ -25,7 +25,7 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 - Encoder Right: OutA→D18, OutB→D19
 - Motor Left:    PWM→D6,   DIR→D52
 - Motor Right:   PWM→D7,   DIR→D53
-- IMU:           SCL→D21,  SDA→D20
+- IMU:           SCL→RPi Pin 5 (GPIO 3), SDA→RPi Pin 3 (GPIO 2), VCC→3.3V (Pin 1), GND→Pin 6
 
 **Gear train:**
 - Motor gear 9T → Encoder gear 9T (1:1)
@@ -66,9 +66,10 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
         └── robot_controller/            ← Main ROS2 Python package
             ├── robot_controller/
             │   ├── __init__.py
-            │   └── serial_bridge.py     ← Arduino↔ROS2 bridge node
+            │   ├── serial_bridge.py     ← Arduino↔ROS2 bridge node (/odom + TF only)
+            │   └── imu_node.py          ← MPU6050 via RPi I2C → /imu/data at 50Hz
             ├── launch/
-            │   ├── bringup.launch.py    ← robot_state_publisher + serial_bridge + sllidar
+            │   ├── bringup.launch.py    ← robot_state_publisher + serial_bridge + imu_node + sllidar
             │   ├── slam.launch.py       ← bringup + slam_toolbox
             │   ├── nav2.launch.py       ← bringup + Nav2 (needs saved map)
             │   └── rviz.launch.py       ← RViz2 (run on VM)
@@ -76,7 +77,7 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
             │   ├── slam_params.yaml     ← slam_toolbox, saves map to ~/agv_map
             │   ├── nav2_params.yaml     ← Nav2 full config
             │   └── agv.rviz             ← RViz2 config
-            ├── setup.py                 ← entry_point: serial_bridge
+            ├── setup.py                 ← entry_points: serial_bridge, imu_node
             └── package.xml
 ```
 
@@ -84,21 +85,15 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 
 ## Arduino Firmware (`yamancode.cpp`)
 
-- **Library:** MPU6050 by Electronic Cats (Arduino Library Manager)
-- **IMU address:** `0x68` (clone returns WHO_AM_I=0x70 — skip `testConnection()`, just use `initialize()`)
 - **Serial protocol (115200 baud):**
   - Receive: `V:<vx>,<wz>\n` — velocity m/s and rad/s
   - Send: `O:<x>,<y>,<th>,<vl>,<vr>\n` — odometry 50Hz
-  - Send: `I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>\n` — IMU 50Hz
 - **Keyboard teleop:** `i`=fwd, `,`=back, `j`=left, `l`=right, `k`=stop, `+/-`=speed
 - **PID velocity control** per wheel (Kp=150, Ki=80, Kd=3 — needs tuning)
 - **Watchdog:** stops motors if no command for 500ms
 
-**IMU fix history:**
-- Device at 0x68, WHO_AM_I = 0x70 (not standard 0x68)
-- `testConnection()` fails because it compares WHO_AM_I to 0x68
-- Fix: skip `testConnection()`, call `initialize()` directly, set `imu_ok = true`
-- After fix: Serial Monitor shows `INFO:IMU_OK` + `I:` lines ✅
+Note: IMU was previously wired to Arduino (D20/D21) and firmware sent `I:` lines.
+IMU is now on RPi I2C directly — `I:` lines no longer used.
 
 ---
 
@@ -106,10 +101,21 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 
 - Subscribes `/cmd_vel` → sends `V:<vx>,<wz>\n` to Arduino
 - Reads `O:` → publishes `nav_msgs/Odometry` on `/odom` + `odom→base_footprint` TF
-- Reads `I:` → publishes `sensor_msgs/Imu` on `/imu/data`
 - Watchdog: sends `V:0,0` if no /cmd_vel for 500ms
 - Debug logging: logs every 50 odom messages received
 - Port: `/dev/ttyUSBArduinoMega`
+
+---
+
+## IMU Node (`imu_node.py`)
+
+- Reads MPU6050 directly via RPi I2C bus 1 (address 0x68)
+- Publishes `sensor_msgs/Imu` on `/imu/data` at 50Hz, frame `base_link`
+- WHO_AM_I = 0x70 (clone quirk) — handled by skipping testConnection, waking via PWR_MGMT_1
+- Accel: ±2g range → converts to m/s², Gyro: ±250°/s range → converts to rad/s
+- Parameters: `i2c_bus` (default 1), `i2c_address` (default 0x68)
+- Dependency: `python3-smbus2` (installed via apt)
+- **Verified 2026-03-24:** `/imu/data` publishing, accel Z ≈ 9.59 m/s² (gravity) ✅
 
 ---
 
@@ -117,8 +123,7 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 
 - Package: **sllidar_ros2** (built from source — `rplidar_ros` from apt fails on C1)
 - Port: `/dev/ttyUSBlidar`, baudrate: 460800, scan_mode: `Standard`, frame: `laser_frame`
-- **Current issue:** `SL_RESULT_OPERATION_TIMEOUT` — sllidar_node crashes on startup
-- **Next debug step:** Check if lidar is spinning when bringup starts, try different scan_mode or baudrate
+- Issue resolved (Session 2): kill stale processes before bringup ✅
 
 ---
 
@@ -150,14 +155,16 @@ odom
 
 ---
 
-## Bug Fixes Applied (Session 2 — 2026-03-16)
+## Bug Fixes Applied
 
-### Fix 1: sllidar `SL_RESULT_OPERATION_TIMEOUT` — SOLVED
+### Session 2 (2026-03-16)
+
+#### Fix 1: sllidar `SL_RESULT_OPERATION_TIMEOUT` — SOLVED
 - **Root cause:** Stale `sllidar_node` process from a previous failed launch was holding `/dev/ttyUSBlidar`
 - **Fix:** Kill all stale ROS2 processes before bringup
 - **Confirmed:** `sllidar_node` runs, gets device info, publishes `/scan` at 10Hz ✅
 
-### Fix 2: `/odom` not publishing — SOLVED
+#### Fix 2: `/odom` not publishing — SOLVED
 - **Root cause:** pyserial 3.5 (Ubuntu 24.04 system package) has a thread-safety bug on Python 3.12
   - Concurrent `readline()` in read thread + `write()` in watchdog timer → `TypeError: 'NoneType' object cannot be interpreted as an integer`
   - The crash killed the read thread silently
@@ -165,22 +172,30 @@ odom
   - Single serial thread handles ALL serial I/O (reads AND writes)
   - ROS callbacks (`/cmd_vel`, watchdog timer) put commands in `queue.Queue`
   - Serial thread drains queue before each readline — no concurrent access
-- **File:** `robot_ws/src/robot_controller/robot_controller/serial_bridge.py`
-- **Confirmed:** `/odom` publishes at 49.5Hz, `/imu/data` at 49.5Hz ✅
+- **Confirmed:** `/odom` publishes at 49.5Hz ✅
 
-### Hardware Note: USB cable
+#### Hardware Note: USB cable
 - Arduino USB cable was intermittently loose during session — caused `/odom` to drop out
 - **Action needed:** Secure the Arduino USB cable (zip tie or strain relief)
 - Power supply warning ("not capable of supplying 5A") still shows with mini560 — Pi 5 requires USB PD negotiation; mini560 may not signal PD properly. USB peripheral power may be restricted.
+
+### Session 3 (2026-03-24)
+
+#### IMU moved from Arduino to RPi I2C — DONE
+- **Change:** MPU6050 rewired from Arduino D20/D21 to RPi GPIO 2/3 (I2C bus 1)
+- **New node:** `imu_node.py` reads I2C directly, publishes `/imu/data` at 50Hz
+- **serial_bridge.py:** Removed IMU publisher and `I:` line handler (no longer needed)
+- **bringup.launch.py:** Added `imu_node` alongside `serial_bridge`
+- **Confirmed:** `/imu/data` publishing, accel Z ≈ 9.59 m/s² ✅
 
 ---
 
 ## Current Status
 
-### ✅ ALL SENSORS WORKING (verified 2026-03-16)
-- `/scan` publishing at 10Hz — RPLidar C1, Standard mode, 16m range ✅
-- `/odom` publishing at ~50Hz — Arduino encoder odometry ✅
-- `/imu/data` publishing at ~50Hz — MPU6050 accelerometer + gyro ✅
+### ✅ ALL SENSORS WORKING
+- `/scan` publishing at 10Hz — RPLidar C1, Standard mode, 16m range ✅ (verified 2026-03-16)
+- `/odom` publishing at ~50Hz — Arduino encoder odometry ✅ (verified 2026-03-16)
+- `/imu/data` publishing at ~50Hz — MPU6050 via RPi I2C ✅ (verified 2026-03-24)
 - `/tf` tree publishing — odom→base_footprint→base_link→laser_frame ✅
 - `robot_state_publisher` running ✅
 - `udev symlinks` permanent ✅
@@ -218,7 +233,7 @@ cd ~/yaman_capstone/robot_ws && colcon build
 cd ~/pi/yaman_capstone/robot_ws && colcon build
 
 # Kill all ROS processes (use before clean start)
-kill -9 $(ps aux | grep -E 'serial_bridge|sllidar|robot_state|ros2' | grep -v grep | awk '{print $2}') 2>/dev/null
+kill -9 $(ps aux | grep -E 'serial_bridge|imu_node|sllidar|robot_state|ros2' | grep -v grep | awk '{print $2}') 2>/dev/null
 ```
 
 ---
