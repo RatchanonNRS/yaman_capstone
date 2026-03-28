@@ -26,7 +26,7 @@ def generate_launch_description():
     slam = Node(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
-        parameters=[slam_params],
+        parameters=[slam_params, {'use_lifecycle_manager': False}],
         output='screen',
     )
 

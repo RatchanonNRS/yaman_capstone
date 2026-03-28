@@ -9,14 +9,24 @@ slam_toolbox:
     ceres_dogleg_type: TRADITIONAL_DOGLEG
     ceres_loss_function: None
 
+    # Lifecycle — auto-activate on startup (required in ROS2 Jazzy)
+    lifecycle_autostart: true
+
     # ROS frames
     odom_frame:  odom
     map_frame:   map
     base_frame:  base_footprint
     scan_topic:  /scan
 
+    # TF timing — critical on RPi: give enough time to look up odom→base_footprint
+    transform_timeout:  0.5
+    tf_buffer_duration: 30.0
+
     # Mode: mapping
     mode: mapping
+
+    # Throttle scans — process every Nth scan to reduce CPU load on RPi
+    throttle_scans: 2
 
     # Map update rate
     map_update_interval: 5.0        # seconds between map saves to disk

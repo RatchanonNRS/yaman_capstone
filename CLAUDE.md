@@ -188,6 +188,20 @@ odom
 - **bringup.launch.py:** Added `imu_node` alongside `serial_bridge`
 - **Confirmed:** `/imu/data` publishing, accel Z ≈ 9.59 m/s² ✅
 
+#### Arduino firmware updated — DONE
+- **Change:** Removed all MPU6050 code from `yamancode.cpp` (includes, init, `I:` publish)
+- **Arduino only outputs:** `O:<x>,<y>,<th>,<vl>,<vr>\n` at 50Hz
+- **Uploaded via:** `arduino-cli` 1.4.1 installed on RPi, sketch at `~/yaman_capstone/yamancode_sketch/`
+- **Upload command:** `arduino-cli upload --fqbn arduino:avr:mega --port /dev/ttyUSBArduinoMega ~/yaman_capstone/yamancode_sketch/`
+
+#### SLAM lifecycle + params fixed — DONE
+- **Problem 1:** slam_toolbox logged "Failed to compute odometry" (TF timeout) and "message is full" (RPi too slow for 10Hz scans)
+  - Fix: Added `transform_timeout: 0.5`, `tf_buffer_duration: 30.0`, `throttle_scans: 2` to `slam_params.yaml`
+- **Problem 2:** In ROS2 Jazzy, `async_slam_toolbox_node` is a lifecycle node — it starts unconfigured and subscribes to nothing until activated
+  - Fix: Added `lifecycle_autostart: true` to `slam_params.yaml` and `{'use_lifecycle_manager': False}` to `slam.launch.py`
+  - Manual workaround (if needed): `ros2 lifecycle set /slam_toolbox configure && ros2 lifecycle set /slam_toolbox activate`
+- **Confirmed:** `/map` and `/map_updates` publishing ✅, slam_toolbox subscribed to `/scan` ✅
+
 ---
 
 ## Current Status
@@ -204,6 +218,7 @@ odom
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
 - **PID tuning:** Kp=150, Ki=80, Kd=3 — not yet tested with real motor movement
+- **RViz map not yet visually confirmed** — /map is publishing but need to confirm map appears in RViz on VM and robot pose is correct
 
 ---
 
@@ -238,9 +253,21 @@ kill -9 $(ps aux | grep -E 'serial_bridge|imu_node|sllidar|robot_state|ros2' | g
 
 ---
 
+## Git Convention
+
+When the user says **"push"**, it means the full sequence:
+```bash
+git add .
+git commit -m "your comment"
+git push
+```
+
+---
+
 ## Priority for Next Session
 
-1. **First full robot test** — run bringup, open RViz2 on VM, verify TF tree and sensor data visually
-2. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd in `yamancode.cpp`
-3. **SLAM mapping** — drive around, save map to `~/agv_map`
-4. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
+1. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4, 2026-03-29): map was visible in RViz ✅
+2. **Pre-SLAM checks** — verify all sensors before starting SLAM
+3. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd in `yamancode.cpp`
+4. **SLAM mapping** — drive around, save map to `~/agv_map`
+5. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
