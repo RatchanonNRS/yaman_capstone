@@ -198,7 +198,8 @@ odom
 - **Problem 1:** slam_toolbox logged "Failed to compute odometry" (TF timeout) and "message is full" (RPi too slow for 10Hz scans)
   - Fix: Added `transform_timeout: 0.5`, `tf_buffer_duration: 30.0`, `throttle_scans: 2` to `slam_params.yaml`
 - **Problem 2:** In ROS2 Jazzy, `async_slam_toolbox_node` is a lifecycle node — it starts unconfigured and subscribes to nothing until activated
-  - Fix: Added `lifecycle_autostart: true` to `slam_params.yaml` and `{'use_lifecycle_manager': False}` to `slam.launch.py`
+  - `lifecycle_autostart: true` in slam_params.yaml does NOT work reliably
+  - Fix (Session 4): `slam.launch.py` now uses `TimerAction` + `ExecuteProcess` to auto-run `ros2 lifecycle set /slam_toolbox configure` at t=5s and `activate` at t=8s
   - Manual workaround (if needed): `ros2 lifecycle set /slam_toolbox configure && ros2 lifecycle set /slam_toolbox activate`
 - **Confirmed:** `/map` and `/map_updates` publishing ✅, slam_toolbox subscribed to `/scan` ✅
 
