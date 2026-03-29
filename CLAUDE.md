@@ -267,8 +267,15 @@ git push
 
 ## Priority for Next Session
 
-1. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4, 2026-03-29): map was visible in RViz ✅
-2. **Pre-SLAM checks** — verify all sensors before starting SLAM
-3. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd in `yamancode.cpp`
-4. **SLAM mapping** — drive around, save map to `~/agv_map`
-5. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
+1. **🔴 FIX TELEOP DIRECTION BUG** — robot moves wrong direction with `teleop_twist_keyboard`
+   - Could not save SLAM map last session because of this
+   - Diagnose first: press `i` (forward) and `j` (left turn), observe what robot actually does
+   - Likely cause A: both motors inverted → invert DIR logic in `setMotor()` (`yamancode.cpp` line 87: `HIGH↔LOW`)
+   - Likely cause B: one motor inverted → add per-motor invert constant in `yamancode.cpp`
+   - Likely cause C: turns swapped → negate `wz` in `serial_bridge.py` line 79
+   - After fix: re-upload firmware (`arduino-cli upload`) and re-test before SLAM
+2. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4, 2026-03-29): map was visible in RViz ✅
+3. **Pre-SLAM checks** — verify all sensors before starting SLAM
+4. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd in `yamancode.cpp`
+5. **SLAM mapping** — drive around, save map to `~/agv_map`
+6. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
