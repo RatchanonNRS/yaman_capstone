@@ -54,9 +54,9 @@
 #define ENC_R_B  19
 
 #define MOT_L_PWM  6
-#define MOT_L_DIR 52
+#define MOT_L_DIR 22
 #define MOT_R_PWM  7
-#define MOT_R_DIR 53
+#define MOT_R_DIR 23
 
 // ── Robot geometry ───────────────────────────────────────────────────────────
 constexpr float COUNTS_PER_REV  = 600.0f * 4.0f * (32.0f / 9.0f);
@@ -237,8 +237,8 @@ void loop() {
   enc_left_prev  = lc;
   enc_right_prev = rc;
 
-  float dl = dl_counts * M_PER_COUNT;
-  float dr = dr_counts * M_PER_COUNT;
+  float dl = -dl_counts * M_PER_COUNT;  // Left encoder physically inverted
+  float dr = -dr_counts * M_PER_COUNT;  // Right encoder physically inverted
 
   // ── 5. Actual wheel velocities ────────────────────────────────────────────────
   vel_left_actual  = dl / dt;

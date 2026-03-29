@@ -23,10 +23,10 @@ Right Wheel
 -Wheel Motor Driver(Cytron MDD20A)
 Left
 -pwm1 d6
--dir1 d52
+-dir1 d22
 Right
 -pwm2 d7
--dir2 d53
+-dir2 d23
 -IMU(mpu9250)
 -SCL d21
 -SDA d20

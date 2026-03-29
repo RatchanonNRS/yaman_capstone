@@ -23,8 +23,8 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 **Wiring:**
 - Encoder Left:  OutA→D2,  OutB→D3
 - Encoder Right: OutA→D18, OutB→D19
-- Motor Left:    PWM→D6,   DIR→D52
-- Motor Right:   PWM→D7,   DIR→D53
+- Motor Left:    PWM→D6,   DIR→D22
+- Motor Right:   PWM→D7,   DIR→D23
 - IMU:           SCL→RPi Pin 5 (GPIO 3), SDA→RPi Pin 3 (GPIO 2), VCC→3.3V (Pin 1), GND→Pin 6
 
 **Gear train:**
@@ -179,6 +179,28 @@ odom
 - **Action needed:** Secure the Arduino USB cable (zip tie or strain relief)
 - Power supply warning ("not capable of supplying 5A") still shows with mini560 — Pi 5 requires USB PD negotiation; mini560 may not signal PD properly. USB peripheral power may be restricted.
 
+### Session 5 (2026-03-29) — Teleop direction bug FIXED ✅
+
+#### Root causes found and fixed
+1. **DIR pins wrong** — code used D52/D53, actual wiring is D22/D23
+2. **DIR logic inverted** — `LOW` was coded as forward, but physical forward = `HIGH`
+3. **Both encoders inverted** — forward motion gives negative raw counts for both wheels
+
+#### All fixes applied to `yamancode_sketch.ino`
+| What | Old | New |
+|------|-----|-----|
+| MOT_L_DIR pin | D52 | D22 |
+| MOT_R_DIR pin | D53 | D23 |
+| setMotor() DIR logic | `speed>=0 ? LOW : HIGH` | `speed>=0 ? HIGH : LOW` |
+| Left encoder sign | `dl = dl_counts * M_PER_COUNT` | `dl = -dl_counts * M_PER_COUNT` |
+| Right encoder sign | `dr = dr_counts * M_PER_COUNT` | `dr = -dr_counts * M_PER_COUNT` |
+
+#### Verified with motor_test_sketch (PWM=50, 2s)
+- FORWARD (L=HIGH, R=HIGH): enc_left=-5933, enc_right=-6035, physical **straight forward** ✅
+- BACKWARD (L=LOW,  R=LOW):  enc_left=+6061, enc_right=+6008, physical **straight backward** ✅
+
+---
+
 ### Session 3 (2026-03-24)
 
 #### IMU moved from Arduino to RPi I2C — DONE
@@ -218,7 +240,7 @@ odom
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **PID tuning:** Kp=150, Ki=80, Kd=3 — not yet tested with real motor movement
+- **PID tuning:** Kp=150, Ki=80, Kd=3 — robot only reaches ~0.08 m/s with 0.20 m/s target, needs tuning
 - **RViz map not yet visually confirmed** — /map is publishing but need to confirm map appears in RViz on VM and robot pose is correct
 
 ---
@@ -267,15 +289,11 @@ git push
 
 ## Priority for Next Session
 
-1. **🔴 FIX TELEOP DIRECTION BUG** — robot moves wrong direction with `teleop_twist_keyboard`
-   - Could not save SLAM map last session because of this
-   - Diagnose first: press `i` (forward) and `j` (left turn), observe what robot actually does
-   - Likely cause A: both motors inverted → invert DIR logic in `setMotor()` (`yamancode.cpp` line 87: `HIGH↔LOW`)
-   - Likely cause B: one motor inverted → add per-motor invert constant in `yamancode.cpp`
-   - Likely cause C: turns swapped → negate `wz` in `serial_bridge.py` line 79
-   - After fix: re-upload firmware (`arduino-cli upload`) and re-test before SLAM
-2. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4, 2026-03-29): map was visible in RViz ✅
-3. **Pre-SLAM checks** — verify all sensors before starting SLAM
-4. **PID tuning** — test motor response with teleop, tune Kp/Ki/Kd in `yamancode.cpp`
+1. ~~**FIX TELEOP DIRECTION BUG**~~ — **DONE** (Session 5, 2026-03-29) ✅
+2. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4, 2026-03-29) ✅
+3. ~~**VERIFY TELEOP**~~ — **DONE** (Session 5, 2026-03-29) ✅ — `i`=forward, `j`=left turn confirmed
+4. **🔴 PID tuning** — Kp=150, Ki=80, Kd=3 — robot reaches ~0.08 m/s with target 0.20 m/s, needs tuning
+   - Increase Kp first to reach target velocity faster
+   - Then tune Ki/Kd to reduce oscillation
 5. **SLAM mapping** — drive around, save map to `~/agv_map`
 6. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
