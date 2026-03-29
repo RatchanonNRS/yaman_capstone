@@ -34,7 +34,8 @@ slam_toolbox:
     # Resolution
     resolution: 0.05                # metres per cell
 
-    # Maximum laser range to use
+    # Laser range limits
+    minimum_laser_range: 0.40       # filter robot's own pillars (corners ~0.39m from lidar)
     max_laser_range: 12.0           # RPLidar C1 max range
 
     # Minimum travel before updating map (reduces CPU)

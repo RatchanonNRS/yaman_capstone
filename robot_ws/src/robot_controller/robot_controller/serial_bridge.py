@@ -3,9 +3,14 @@ serial_bridge.py — ROS2 node that bridges Arduino Mega ↔ ROS2
 
   Arduino → RPi  (parsed here):
     "O:<x>,<y>,<th>,<vl>,<vr>\\n"  → nav_msgs/Odometry + odom→base_footprint TF
+    "SEQ:STEP:<n>:<desc>\\n"        → /sequence/status (String)
+    "SEQ:RETRY:<n>\\n"              → /sequence/status (String)
+    "SEQ:DONE\\n"                   → /sequence/status (String)
+    "SEQ:FAIL:<reason>\\n"          → /sequence/status (String)
 
   RPi → Arduino  (sent here):
-    /cmd_vel (Twist) → "V:<vx>,<wz>\\n"
+    /cmd_vel (Twist)        → "V:<vx>,<wz>\\n"
+    /sequence/command (String) → forwarded as-is (e.g. "SEQ:START\\n")
     watchdog: sends "V:0,0\\n" if no /cmd_vel for 500 ms
 
 Note: IMU is now read directly from RPi I2C by imu_node.py
@@ -26,6 +31,7 @@ import serial
 
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 
@@ -53,11 +59,14 @@ class SerialBridge(Node):
 
         # ── Publishers ──────────────────────────────────────────────────────
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
+        self.seq_pub  = self.create_publisher(String, '/sequence/status', 10)
         self.tf_br    = TransformBroadcaster(self)
 
-        # ── Subscriber ──────────────────────────────────────────────────────
+        # ── Subscribers ─────────────────────────────────────────────────────
         self.cmd_sub = self.create_subscription(
             Twist, '/cmd_vel', self._cmd_vel_cb, 10)
+        self.seq_cmd_sub = self.create_subscription(
+            String, '/sequence/command', self._seq_command_cb, 10)
         self._last_cmd_time = time.monotonic()
 
         # ── Watchdog timer (10 Hz) ───────────────────────────────────────────
@@ -78,6 +87,12 @@ class SerialBridge(Node):
         wz = msg.angular.z
         self._cmd_queue.put(f'V:{vx:.4f},{wz:.4f}\n'.encode())
         self._last_cmd_time = time.monotonic()
+
+    # ── /sequence/command callback — forwards raw string to Arduino ──────────
+    def _seq_command_cb(self, msg: String):
+        cmd = msg.data.strip()
+        self._cmd_queue.put(f'{cmd}\n'.encode())
+        self.get_logger().info(f'Sequence command → Arduino: {cmd}')
 
     # ── Watchdog — sends stop if /cmd_vel goes silent ────────────────────────
     def _watchdog_cb(self):
@@ -119,8 +134,17 @@ class SerialBridge(Node):
                 self._odom_count += 1
                 if self._odom_count % 50 == 0:
                     self.get_logger().info(f'Odom published x{self._odom_count}: {line}')
+            elif line.startswith('SEQ:'):
+                self._handle_seq(line)
             elif line.startswith('ERR:') or line.startswith('INFO:'):
                 self.get_logger().warn(f'Arduino: {line}')
+
+    # ── Parse SEQ: line and publish ──────────────────────────────────────────
+    def _handle_seq(self, line: str):
+        msg = String()
+        msg.data = line
+        self.seq_pub.publish(msg)
+        self.get_logger().info(f'Sequence: {line}')
 
     # ── Parse odometry line and publish ─────────────────────────────────────
     def _handle_odom(self, payload: str):

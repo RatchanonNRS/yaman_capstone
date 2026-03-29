@@ -52,7 +52,10 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 ~/yaman_capstone/                        ← RPi: /home/yaman/yaman_capstone/
                                            VM:  /home/yaman/pi/yaman_capstone/
 ├── CLAUDE.md                            ← this file
-├── yamancode.cpp                        ← Arduino Mega firmware
+├── yamancode_sketch/
+│   └── yamancode_sketch.ino             ← Arduino Mega firmware (AGV + sequence)
+├── motor_test_sketch/
+│   └── motor_test_sketch.ino            ← Motor direction test
 ├── install_ros2.sh                      ← ROS2 Jazzy install script (already run)
 └── robot_ws/
     └── src/
@@ -66,10 +69,12 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
         └── robot_controller/            ← Main ROS2 Python package
             ├── robot_controller/
             │   ├── __init__.py
-            │   ├── serial_bridge.py     ← Arduino↔ROS2 bridge node (/odom + TF only)
-            │   └── imu_node.py          ← MPU6050 via RPi I2C → /imu/data at 50Hz
+            │   ├── serial_bridge.py     ← Arduino↔ROS2: /odom, /sequence/status, /sequence/command
+            │   ├── imu_node.py          ← MPU6050 via RPi I2C → /imu/data at 50Hz
+            │   └── mission_node.py      ← Shuttle mission: GOING→SEQUENCING→RETURNING
             ├── launch/
             │   ├── bringup.launch.py    ← robot_state_publisher + serial_bridge + imu_node + sllidar
+            │   ├── mission.launch.py    ← bringup + mission_node (param: target_distance)
             │   ├── slam.launch.py       ← bringup + slam_toolbox
             │   ├── nav2.launch.py       ← bringup + Nav2 (needs saved map)
             │   └── rviz.launch.py       ← RViz2 (run on VM)
@@ -77,9 +82,23 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
             │   ├── slam_params.yaml     ← slam_toolbox, saves map to ~/agv_map
             │   ├── nav2_params.yaml     ← Nav2 full config
             │   └── agv.rviz             ← RViz2 config
-            ├── setup.py                 ← entry_points: serial_bridge, imu_node
+            ├── setup.py                 ← entry_points: serial_bridge, imu_node, mission_node
             └── package.xml
 ```
+
+---
+
+## System Overview
+
+AGV medicine dispensing robot. AGV navigates HOME ↔ SHELF (straight line, always same path).
+On top of AGV: vertical rail + horizontal rail + SCARA arm + vacuum EE + USB camera.
+HOME position = PHARMACIST position (same point).
+
+Full mission:
+1. AGV drives forward HOME → SHELF
+2. Arduino executes shelf sequence (retrieve box → pick 1 medicine pack → return box)
+3. AGV reverses SHELF → HOME
+4. Web dashboard shows sequence steps + camera images
 
 ---
 
@@ -87,7 +106,12 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
 
 - **Serial protocol (115200 baud):**
   - Receive: `V:<vx>,<wz>\n` — velocity m/s and rad/s
+  - Receive: `SEQ:START\n` — trigger medicine dispensing sequence
   - Send: `O:<x>,<y>,<th>,<vl>,<vr>\n` — odometry 50Hz
+  - Send: `SEQ:STEP:<n>:<desc>\n` — sequence step update
+  - Send: `SEQ:RETRY:<n>\n` — vacuum retry attempt n
+  - Send: `SEQ:DONE\n` — sequence complete (AGV can return)
+  - Send: `SEQ:FAIL:VACUUM_NO_PRESSURE\n` — max retries exceeded
 - **Keyboard teleop:** `i`=fwd, `,`=back, `j`=left, `l`=right, `k`=stop, `+/-`=speed
 - **PID velocity control** per wheel (Kp=150, Ki=80, Kd=3 — needs tuning)
 - **Watchdog:** stops motors if no command for 500ms
@@ -97,12 +121,24 @@ IMU is now on RPi I2C directly — `I:` lines no longer used.
 
 ---
 
+## Sequence Protocol (Arduino ↔ RPi)
+
+- Vacuum pump opens BEFORE EE descends, closes AFTER pack placed in container
+- Pressure fail → retry: go down again (or shift SCARA slightly), up to 3 retries
+- After 3 fails → `SEQ:FAIL` → AGV stops, operator needed
+- 1 medicine pack per mission
+
+**Mock mode** (hardware not ready): Mega uses delays (~800ms/step), random pressure fail once per mission then succeeds on retry.
+
+---
+
 ## Serial Bridge Node (`serial_bridge.py`)
 
 - Subscribes `/cmd_vel` → sends `V:<vx>,<wz>\n` to Arduino
+- Subscribes `/sequence/command` → forwards raw string to Arduino (e.g. `SEQ:START`)
 - Reads `O:` → publishes `nav_msgs/Odometry` on `/odom` + `odom→base_footprint` TF
+- Reads `SEQ:` lines → publishes `std_msgs/String` on `/sequence/status`
 - Watchdog: sends `V:0,0` if no /cmd_vel for 500ms
-- Debug logging: logs every 50 odom messages received
 - Port: `/dev/ttyUSBArduinoMega`
 
 ---
@@ -248,21 +284,31 @@ odom
 ## Run Commands
 
 ```bash
-# RPi — bringup
+# RPi — bringup only
 ros2 launch robot_controller bringup.launch.py
+
+# RPi — full mission (measure target_distance first via teleop + odom)
+ros2 launch robot_controller mission.launch.py target_distance:=3.0
+
+# RPi — trigger mission
+ros2 topic pub /mission/command std_msgs/msg/String "data: 'go'" --once
+
+# RPi — monitor mission + sequence
+ros2 topic echo /mission/status
+ros2 topic echo /sequence/status
 
 # RPi — SLAM mapping
 ros2 launch robot_controller slam.launch.py
-
-# RPi — Nav2 navigation
-ros2 launch robot_controller nav2.launch.py
 
 # VM — RViz2
 source ~/pi/yaman_capstone/robot_ws/install/setup.bash
 ros2 launch robot_controller rviz.launch.py
 
-# Teleop
+# Teleop (run on RPi via ssh)
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
+# Upload Arduino firmware
+arduino-cli upload --fqbn arduino:avr:mega --port /dev/ttyUSBArduinoMega ~/yaman_capstone/yamancode_sketch/
 
 # Rebuild — RPi
 cd ~/yaman_capstone/robot_ws && colcon build
@@ -289,11 +335,18 @@ git push
 
 ## Priority for Next Session
 
-1. ~~**FIX TELEOP DIRECTION BUG**~~ — **DONE** (Session 5, 2026-03-29) ✅
-2. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4, 2026-03-29) ✅
-3. ~~**VERIFY TELEOP**~~ — **DONE** (Session 5, 2026-03-29) ✅ — `i`=forward, `j`=left turn confirmed
-4. **🔴 PID tuning** — Kp=150, Ki=80, Kd=3 — robot reaches ~0.08 m/s with target 0.20 m/s, needs tuning
-   - Increase Kp first to reach target velocity faster
-   - Then tune Ki/Kd to reduce oscillation
-5. **SLAM mapping** — drive around, save map to `~/agv_map`
-6. **Nav2 navigation** — set goal in RViz2, verify autonomous navigation
+1. ~~**FIX TELEOP DIRECTION BUG**~~ — **DONE** (Session 5) ✅
+2. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4) ✅
+3. ~~**VERIFY TELEOP**~~ — **DONE** (Session 5) ✅
+4. ~~**Mission node + sequence integration**~~ — **DONE** (Session 6, 2026-03-30) ✅
+   - mission_node.py: GOING → SEQUENCING → RETURNING
+   - serial_bridge.py: SEQ: protocol added
+   - yamancode_sketch.ino: mock sequence with vacuum retry
+5. **🔴 PID tuning** — updated to Kp=500, Ki=50, Kd=2 (not yet tested)
+   - Test with teleop, check if robot reaches 0.20 m/s
+   - Stop behavior fixed: target=0 cuts motor immediately
+6. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF distance
+7. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
+8. **SLAM mapping** — drive around room, save map to `~/agv_map`
+9. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
+10. **Camera setup** — USB camera, integrate with sequence Step 9

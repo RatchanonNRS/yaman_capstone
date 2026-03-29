@@ -66,9 +66,9 @@ constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV;
 constexpr float WHEELBASE_M     = 0.445f;
 
 // ── PID gains (tune on real robot) ───────────────────────────────────────────
-constexpr float PID_KP           = 150.0f;
-constexpr float PID_KI           = 80.0f;
-constexpr float PID_KD           = 3.0f;
+constexpr float PID_KP           = 500.0f;
+constexpr float PID_KI           = 50.0f;
+constexpr float PID_KD           = 2.0f;
 constexpr float PID_INTEGRAL_MAX = 80.0f;
 constexpr float MAX_VEL_MS       = 0.5f;
 
@@ -134,10 +134,108 @@ void setVelocity(float vx, float wz) {
   last_cmd_ms = millis();
 }
 
+// ── Sequence (mock) ───────────────────────────────────────────────────────────
+// Real hardware: replace mock delays with actual actuator control + sensor reads
+// Mock pressure: fails on first attempt once per mission, succeeds on retry
+
+bool seq_running      = false;
+uint8_t seq_step      = 0;
+uint32_t seq_step_ms  = 0;   // when current step started
+bool mock_fail_done   = false; // track if we already did one fake fail this mission
+
+void seqStep(uint8_t n, const char* desc, uint16_t duration_ms) {
+  Serial.print("SEQ:STEP:");
+  Serial.print(n);
+  Serial.print(":");
+  Serial.println(desc);
+  seq_step_ms = millis();
+  seq_step    = n;
+  (void)duration_ms; // used by caller via delay pattern
+}
+
+// Called from loop() — non-blocking sequence runner using millis()
+// Each step waits SEQ_STEP_MS before advancing (mock duration)
+#define SEQ_STEP_MS 800
+
+// Vacuum retry state
+uint8_t vacuum_retries = 0;
+#define VACUUM_MAX_RETRIES 3
+
+void runSequence() {
+  if (!seq_running) return;
+  if (millis() - seq_step_ms < SEQ_STEP_MS) return;  // wait for step duration
+
+  switch (seq_step) {
+    // ── PHASE 2: Retrieve medicine box ─────────────────────────────────────
+    case 0:  seqStep(3,  "Vertical rail UP",              SEQ_STEP_MS); break;
+    case 3:  seqStep(4,  "Horizontal rail EXTEND",        SEQ_STEP_MS); break;
+    case 4:  seqStep(5,  "Gripper GRIP box",              SEQ_STEP_MS); break;
+    case 5:  seqStep(6,  "Horizontal rail RETRACT",       SEQ_STEP_MS); break;
+    case 6:  seqStep(7,  "Vertical rail DOWN",            SEQ_STEP_MS); break;
+
+    // ── PHASE 3: Medicine extraction ───────────────────────────────────────
+    case 7:  seqStep(8,  "SCARA move to box",             SEQ_STEP_MS); break;
+    case 8:  seqStep(9,  "Camera capture image",          SEQ_STEP_MS); break;
+    case 9:  seqStep(11, "Vacuum pump OPEN",              SEQ_STEP_MS); break;
+    case 11: seqStep(12, "EE rack extend DOWN",           SEQ_STEP_MS); break;
+    case 12: {
+      // Mock pressure check — fail once per mission, then succeed
+      bool pressure_ok = mock_fail_done || (random(0, 100) > 30);
+      if (!pressure_ok && vacuum_retries < VACUUM_MAX_RETRIES) {
+        vacuum_retries++;
+        mock_fail_done = true;
+        Serial.print("SEQ:RETRY:");
+        Serial.println(vacuum_retries);
+        // Retract, shift, try again
+        seqStep(12, "EE rack extend DOWN (retry)",        SEQ_STEP_MS);
+      } else if (vacuum_retries >= VACUUM_MAX_RETRIES && !pressure_ok) {
+        Serial.println("SEQ:FAIL:VACUUM_NO_PRESSURE");
+        seq_running = false;
+      } else {
+        seqStep(14, "Rack retract UP (pack gripped)",     SEQ_STEP_MS);
+      }
+      break;
+    }
+    case 14: seqStep(15, "SCARA move to container",       SEQ_STEP_MS); break;
+    case 15: seqStep(16, "Vacuum pump CLOSE — pack in container", SEQ_STEP_MS); break;
+
+    // ── PHASE 4: Return medicine box ───────────────────────────────────────
+    case 16: seqStep(17, "SCARA retract to safe position",SEQ_STEP_MS); break;
+    case 17: seqStep(18, "Vertical rail UP",              SEQ_STEP_MS); break;
+    case 18: seqStep(19, "Horizontal rail EXTEND",        SEQ_STEP_MS); break;
+    case 19: seqStep(20, "Gripper PLACE box on shelf",    SEQ_STEP_MS); break;
+    case 20: seqStep(21, "Gripper RELEASE",               SEQ_STEP_MS); break;
+    case 21: seqStep(22, "Horizontal rail RETRACT",       SEQ_STEP_MS); break;
+    case 22: seqStep(23, "Vertical rail DOWN",            SEQ_STEP_MS); break;
+
+    case 23:
+      Serial.println("SEQ:DONE");
+      seq_running    = false;
+      vacuum_retries = 0;
+      mock_fail_done = false;
+      break;
+
+    default:
+      seq_step++;
+      seq_step_ms = millis();
+      break;
+  }
+}
+
 // ── Serial parsing ────────────────────────────────────────────────────────────
 String serialBuf = "";
 
 void parseCommand(const String &cmd) {
+  if (cmd.startsWith("SEQ:START")) {
+    seq_running    = true;
+    seq_step       = 0;
+    vacuum_retries = 0;
+    mock_fail_done = false;
+    seq_step_ms    = millis();
+    Serial.println("SEQ:STEP:1:AGV at shelf — sequence starting");
+    return;
+  }
+
   if (cmd.startsWith("V:")) {
     int comma = cmd.indexOf(',', 2);
     if (comma < 0) return;
@@ -214,7 +312,10 @@ void loop() {
     }
   }
 
-  // ── 2. Fixed-rate control + publish ──────────────────────────────────────────
+  // ── 2. Run sequence state machine ────────────────────────────────────────────
+  runSequence();
+
+  // ── 3. Fixed-rate control + publish ──────────────────────────────────────────
   uint32_t now = millis();
   if (now - last_loop_ms < LOOP_INTERVAL_MS) return;
   float dt = (now - last_loop_ms) * 1e-3f;
@@ -248,8 +349,8 @@ void loop() {
   int16_t pwm_l = pid_left.compute(vel_left_actual,  dt);
   int16_t pwm_r = pid_right.compute(vel_right_actual, dt);
 
-  if (pid_left.target  == 0.0f && abs(vel_left_actual)  < 0.01f) { pwm_l = 0; pid_left.reset();  }
-  if (pid_right.target == 0.0f && abs(vel_right_actual) < 0.01f) { pwm_r = 0; pid_right.reset(); }
+  if (pid_left.target  == 0.0f) { pwm_l = 0; pid_left.reset();  }
+  if (pid_right.target == 0.0f) { pwm_r = 0; pid_right.reset(); }
 
   setMotor(MOT_L_PWM, MOT_L_DIR, pwm_l);
   setMotor(MOT_R_PWM, MOT_R_DIR, pwm_r);

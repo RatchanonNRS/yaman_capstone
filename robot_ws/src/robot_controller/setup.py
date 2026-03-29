@@ -14,7 +14,8 @@ setup(
             ['launch/bringup.launch.py',
              'launch/slam.launch.py',
              'launch/nav2.launch.py',
-             'launch/rviz.launch.py']),
+             'launch/rviz.launch.py',
+             'launch/mission.launch.py']),
         ('share/' + package_name + '/config',
             ['config/slam_params.yaml',
              'config/nav2_params.yaml',
@@ -33,8 +34,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'serial_bridge = robot_controller.serial_bridge:main',
-            'imu_node      = robot_controller.imu_node:main',
+            'serial_bridge  = robot_controller.serial_bridge:main',
+            'imu_node       = robot_controller.imu_node:main',
+            'mission_node   = robot_controller.mission_node:main',
         ],
     },
 )
