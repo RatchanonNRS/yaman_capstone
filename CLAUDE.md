@@ -276,8 +276,9 @@ odom
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **PID tuning:** Kp=150, Ki=80, Kd=3 — robot only reaches ~0.08 m/s with 0.20 m/s target, needs tuning
-- **RViz map not yet visually confirmed** — /map is publishing but need to confirm map appears in RViz on VM and robot pose is correct
+- **PID tuning:** Kp=500, Ki=50, Kd=2 — not yet tested
+- **Nav2 AMCL localization:** In a symmetric room, AMCL gets 180° wrong from non-HOME positions. Robot MUST start at HOME (SLAM origin) for AMCL to localize correctly. See Session 7 notes below.
+- **Map needs rebuilding:** Current map origin ≠ HOME position (AMCL localizes HOME at ~(1.56, 0) not (0,0)). Remap with robot starting exactly at HOME.
 
 ---
 
@@ -333,6 +334,27 @@ git push
 
 ---
 
+### Session 7 (2026-03-30) — Nav2 AMCL Investigation
+
+#### Root cause found: AMCL orientation ambiguity in symmetric room
+- **Symptom:** 2D Goal Pose makes robot go backward (away from goal)
+- **Root cause:** AMCL localizes robot 180° wrong in a rectangular room — scan matches the map equally well at 0° and 180°, so AMCL converges to the wrong pose
+- **Lidar confirmed correctly mounted** — rpy=0,0,0 in URDF is correct. Verified: moving robot backward → red scan dots cluster at BACK of robot model ✓
+- **URDF rpy change (0 0 3.14159) was reverted** — it was wrong, lidar is physically correct
+- **AMCL at HOME:** When robot starts at HOME, AMCL localizes at approximately (1.56, 0, yaw≈0) — not (0,0), meaning current map origin ≠ HOME
+
+#### Fix plan for next session
+- **Remap the room:** Start SLAM with robot at HOME, odom reset to 0. After mapping, HOME = map origin (0,0,0). AMCL's hardcoded initial_pose (0,0, yaw=0) will then match HOME exactly.
+- **Save map:** `ros2 run nav2_map_server map_saver_cli -f ~/agv_map` (overwrite old map)
+- **Test:** Launch nav2, robot at HOME, set 1m goal → should go forward correctly
+
+#### Save map command (run while slam.launch.py is active)
+```bash
+ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
+```
+
+---
+
 ## Priority for Next Session
 
 1. ~~**FIX TELEOP DIRECTION BUG**~~ — **DONE** (Session 5) ✅
@@ -342,11 +364,14 @@ git push
    - mission_node.py: GOING → SEQUENCING → RETURNING
    - serial_bridge.py: SEQ: protocol added
    - yamancode_sketch.ino: mock sequence with vacuum retry
-5. **🔴 PID tuning** — updated to Kp=500, Ki=50, Kd=2 (not yet tested)
+5. ~~**SLAM mapping**~~ — **DONE** (Session 6) ✅ but needs redo — see item 6
+6. **🔴 REMAP THE ROOM** — start robot at HOME, run slam.launch.py, drive to map room, save map
+   - Must start at HOME so map origin (0,0) = HOME position
+   - Save: `ros2 run nav2_map_server map_saver_cli -f ~/agv_map`
+7. **🔴 Test Nav2 forward motion** — after remap, launch nav2 from HOME, send 1m goal, verify robot goes FORWARD
+8. **🔴 PID tuning** — Kp=500, Ki=50, Kd=2 (not yet tested)
    - Test with teleop, check if robot reaches 0.20 m/s
-   - Stop behavior fixed: target=0 cuts motor immediately
-6. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF distance
-7. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
-8. **SLAM mapping** — drive around room, save map to `~/agv_map`
-9. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
-10. **Camera setup** — USB camera, integrate with sequence Step 9
+9. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF distance
+10. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
+11. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
+12. **Camera setup** — USB camera, integrate with sequence Step 9

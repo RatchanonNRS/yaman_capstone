@@ -32,8 +32,9 @@ def generate_launch_description():
     )
 
     # Automatically configure then activate slam_toolbox after it starts
+    # Note: RPi needs ~10s to bring up slam_toolbox — shorter timers cause "Node not found"
     configure = TimerAction(
-        period=5.0,
+        period=12.0,
         actions=[ExecuteProcess(
             cmd=['ros2', 'lifecycle', 'set', '/slam_toolbox', 'configure'],
             output='screen',
@@ -41,7 +42,7 @@ def generate_launch_description():
     )
 
     activate = TimerAction(
-        period=8.0,
+        period=16.0,
         actions=[ExecuteProcess(
             cmd=['ros2', 'lifecycle', 'set', '/slam_toolbox', 'activate'],
             output='screen',
