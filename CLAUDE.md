@@ -4,6 +4,39 @@ Read this file at the start of every session to understand the full project stat
 
 ---
 
+## Working With Yaman — Guidelines for Claude
+
+**Who is Yaman:**
+- Capstone student building a real AGV medicine dispensing robot
+- Understands hardware well (wiring, motors, encoders) but less familiar with ROS2/Nav2 internals
+- Not always familiar with ROS2 conventions (e.g. didn't know robot front = +x axis)
+- Uses screenshots of RViz frequently — always check ~/Pictures/Screenshots/ when he says "look at screenshot"
+- Communicates informally and quickly — read carefully, he sometimes skips words
+- Gets frustrated (rightfully) when Claude suggests unsafe actions like moving robot forward when it's already close to a wall — always check context before suggesting motion
+
+**How to work with Yaman:**
+- **Answer questions FIRST before taking action** — he often asks a question before saying "ok go"
+- **Always check physical safety** — robot is real hardware, walls are real. If unsure of space, ask or check odom/AMCL first
+- **Keep explanations short** — he's hands-on, doesn't need theory lectures
+- **When he says "push"** — run: `cd ~/pi/yaman_capstone && git add . && git commit -m "..." && git push`
+- **When he says "look at screenshot"** — `ls -lt ~/Pictures/Screenshots/ | head -3` then read the latest
+- **RViz runs on VM** (~/pi/yaman_capstone), **Nav2/ROS2 runs on RPi** (ssh -i ~/.ssh/id_rpi yaman@192.168.137.50)
+- **Installed params ≠ source params** — nav2_params.yaml changes must be made to BOTH:
+  - Source: `~/pi/yaman_capstone/robot_ws/src/robot_controller/config/nav2_params.yaml`
+  - Installed: `~/pi/yaman_capstone/robot_ws/install/robot_controller/share/robot_controller/config/nav2_params.yaml`
+  - Nav2 launch uses the INSTALLED file. Source changes don't apply until `colcon build` is run.
+- **Kill command before any launch:**
+  ```bash
+  kill -9 $(ps aux | grep -E 'serial_bridge|imu_node|sllidar|robot_state|ros2|component_container' | grep -v grep | awk '{print $2}') 2>/dev/null
+  ```
+- **Launch Nav2 on RPi:**
+  ```bash
+  bash -c 'source /opt/ros/jazzy/setup.bash && source /home/yaman/yaman_capstone/robot_ws/install/setup.bash && nohup ros2 launch robot_controller nav2.launch.py > /tmp/nav2.log 2>&1 &'
+  ```
+- **Check logs:** `tail -30 /tmp/nav2.log` or `grep -E 'ERROR|WARN|navigating|collision' /tmp/nav2.log | tail -20`
+
+---
+
 ## Project Goal
 Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination) using ROS2 Nav2 + SLAM.
 
@@ -273,12 +306,31 @@ odom
 - `robot_state_publisher` running ✅
 - `udev symlinks` permanent ✅
 
+### ✅ NAV2 WORKING (Session 8, 2026-03-31)
+- Map saved: `~/agv_map.pgm` + `~/agv_map.yaml`
+- HOME position on map: **(-2.03, -0.51)** — saved as AMCL initial_pose
+- Robot drove **1m forward** successfully ✅
+- **No 2D Pose Estimate needed at startup** if robot is at HOME
+- **Always bring robot to HOME before shutdown** so AMCL auto-localizes next session
+
+### Nav2 Current Config (key non-default settings)
+| Parameter | Value | Location |
+|---|---|---|
+| `inflation_radius` | 0.30m | local + global costmap |
+| `xy_goal_tolerance` | 0.05m | controller_server |
+| `use_collision_detection` | false | RPP controller |
+| `allow_reversing` | true | RPP controller |
+| `use_rotate_to_heading` | false | RPP controller |
+| `FootprintApproach.enabled` | false | collision_monitor |
+| local costmap plugins | static_layer + inflation_layer | local_costmap |
+| robot footprint | `[[0.30,0.25],[0.30,-0.25],[-0.30,-0.25],[-0.30,0.25]]` | both costmaps |
+| AMCL initial_pose | x=-2.03, y=-0.51, yaw=0 | amcl |
+
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **PID tuning:** Kp=500, Ki=50, Kd=2 — not yet tested
-- **Nav2 AMCL localization:** In a symmetric room, AMCL gets 180° wrong from non-HOME positions. Robot MUST start at HOME (SLAM origin) for AMCL to localize correctly. See Session 7 notes below.
-- **Map needs rebuilding:** Current map origin ≠ HOME position (AMCL localizes HOME at ~(1.56, 0) not (0,0)). Remap with robot starting exactly at HOME.
+- **PID tuning:** Kp=500, Ki=50, Kd=2 — robot overshoots and creeps slowly after reaching goal. Needs tuning next session.
+- **Robot drifts slightly sideways** during forward motion (~6cm over 1m) — likely wheel calibration / wheelbase measurement issue
 
 ---
 
@@ -355,23 +407,45 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 
 ---
 
+### Session 8 (2026-03-31) — Nav2 Forward Motion Working ✅
+
+#### Map remapped and Nav2 tuned
+- **New map saved** — room remapped with slam.launch.py, saved to ~/agv_map
+- **Map origin adjusted** — `agv_map.yaml` origin changed to `[-2.886, -1.467, 0]` so HOME = (-2.03, -0.51) in map frame
+- **AMCL initial_pose** set to `(-2.03, -0.51, yaw=0)` in nav2_params.yaml — no 2D Pose Estimate needed on startup IF robot starts at HOME
+- **Rule:** Always return robot to HOME before shutdown. If robot is at HOME on startup, AMCL auto-localizes correctly.
+
+#### Nav2 params changes (nav2_params.yaml)
+| Parameter | Old | New | Reason |
+|---|---|---|---|
+| `inflation_radius` | 0.55 | 0.30 | Room too small, walls blocked entire path |
+| `use_collision_detection` (RPP) | true | false | Disabled — wires on floor triggered false collision |
+| `FootprintApproach.enabled` | true | false | Disabled — was zeroing velocity from floor clutter |
+| `use_rotate_to_heading` | true | false | Allow reversing without spin |
+| `allow_reversing` | false | true | Robot must reverse back to HOME |
+| `xy_goal_tolerance` | 0.25 | 0.05 | Was too large — goal instantly "reached" without moving |
+| local costmap `plugins` | voxel_layer + inflation | static_layer + inflation | Removed live obstacle layer (floor wires), added static map |
+| footprint | `[[0.25,0.30],...]` | `[[0.30,0.25],...]` | Fixed: front/back=60cm(x), sides=50cm(y) |
+
+#### Verified
+- Robot drove **1m forward straight** from HOME ✅ (slight 6cm y-drift, expected — PID/wheel calibration)
+- Robot **slows and creeps** after reaching goal — PID needs tuning (Kp=500, Ki=50, Kd=2)
+- `allow_reversing: true` is set — backward test NOT yet done (battery low)
+
+---
+
 ## Priority for Next Session
 
 1. ~~**FIX TELEOP DIRECTION BUG**~~ — **DONE** (Session 5) ✅
 2. ~~**Confirm map visible in RViz**~~ — **DONE** (Session 4) ✅
 3. ~~**VERIFY TELEOP**~~ — **DONE** (Session 5) ✅
 4. ~~**Mission node + sequence integration**~~ — **DONE** (Session 6, 2026-03-30) ✅
-   - mission_node.py: GOING → SEQUENCING → RETURNING
-   - serial_bridge.py: SEQ: protocol added
-   - yamancode_sketch.ino: mock sequence with vacuum retry
-5. ~~**SLAM mapping**~~ — **DONE** (Session 6) ✅ but needs redo — see item 6
-6. **🔴 REMAP THE ROOM** — start robot at HOME, run slam.launch.py, drive to map room, save map
-   - Must start at HOME so map origin (0,0) = HOME position
-   - Save: `ros2 run nav2_map_server map_saver_cli -f ~/agv_map`
-7. **🔴 Test Nav2 forward motion** — after remap, launch nav2 from HOME, send 1m goal, verify robot goes FORWARD
-8. **🔴 PID tuning** — Kp=500, Ki=50, Kd=2 (not yet tested)
-   - Test with teleop, check if robot reaches 0.20 m/s
-9. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF distance
-10. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
-11. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
-12. **Camera setup** — USB camera, integrate with sequence Step 9
+5. ~~**SLAM mapping**~~ — **DONE** (Session 8, 2026-03-31) ✅
+6. ~~**REMAP THE ROOM**~~ — **DONE** (Session 8) ✅ — map saved, origin adjusted so HOME = (-2.03, -0.51) in map frame
+7. ~~**Test Nav2 forward motion**~~ — **DONE** (Session 8) ✅ — robot drove 1m forward successfully
+8. **🔴 PID tuning** — robot creeps slowly after reaching goal (overshoots). Kp=500, Ki=50, Kd=2 in yamancode_sketch.ino
+9. **🔴 Test Nav2 RETURN (backward)** — `allow_reversing: true` is set, test sending goal back to HOME after forward move
+10. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF exact distance
+11. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
+12. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
+13. **Camera setup** — USB camera, integrate with sequence Step 9
