@@ -66,7 +66,7 @@ constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV;
 constexpr float WHEELBASE_M     = 0.445f;
 
 // ── PID gains (tune on real robot) ───────────────────────────────────────────
-constexpr float PID_KP           = 200.0f;
+constexpr float PID_KP           = 300.0f;
 constexpr float PID_KI           = 20.0f;
 constexpr float PID_KD           = 8.0f;
 constexpr float PID_INTEGRAL_MAX = 40.0f;
@@ -122,16 +122,42 @@ int32_t enc_right_prev   = 0;
 
 // ── Watchdog ──────────────────────────────────────────────────────────────────
 uint32_t last_cmd_ms = 0;
-constexpr uint32_t CMD_TIMEOUT_MS = 500;
+constexpr uint32_t CMD_TIMEOUT_MS = 200;
+
+// ── Timed brake ───────────────────────────────────────────────────────────────
+// When target transitions to 0, apply fixed reverse PWM for BRAKE_DURATION_MS.
+// Direction determined from the old target (not noisy encoder velocity).
+uint32_t brake_until_ms = 0;
+int8_t   brake_dir_l    = 0;  // -1, 0, +1
+int8_t   brake_dir_r    = 0;
+constexpr uint32_t BRAKE_DURATION_MS = 500;
+constexpr int16_t  BRAKE_PWM         = 80;
 
 // ── Keyboard teleop speed step ───────────────────────────────────────────────
 float key_vx = 0.20f;
 float key_wz = 0.40f;
 
+void startBrake() {
+  brake_dir_l    = (pid_left.target  > VEL_DEADBAND) ? -1 : (pid_left.target  < -VEL_DEADBAND) ? 1 : 0;
+  brake_dir_r    = (pid_right.target > VEL_DEADBAND) ? -1 : (pid_right.target < -VEL_DEADBAND) ? 1 : 0;
+  brake_until_ms = millis() + BRAKE_DURATION_MS;
+  Serial.print("INFO:BRAKE:");
+  Serial.print(brake_dir_l);
+  Serial.print(",");
+  Serial.println(brake_dir_r);
+}
+
 void setVelocity(float vx, float wz) {
   vx = constrain(vx, -MAX_VEL_MS, MAX_VEL_MS);
-  pid_left.target  = constrain(vx - wz * (WHEELBASE_M / 2.0f), -MAX_VEL_MS, MAX_VEL_MS);
-  pid_right.target = constrain(vx + wz * (WHEELBASE_M / 2.0f), -MAX_VEL_MS, MAX_VEL_MS);
+  float new_l = constrain(vx - wz * (WHEELBASE_M / 2.0f), -MAX_VEL_MS, MAX_VEL_MS);
+  float new_r = constrain(vx + wz * (WHEELBASE_M / 2.0f), -MAX_VEL_MS, MAX_VEL_MS);
+  // Only start brake on transition FROM moving TO stop (not on repeated V:0,0 calls)
+  if (fabsf(new_l) < VEL_DEADBAND && fabsf(new_r) < VEL_DEADBAND &&
+      (fabsf(pid_left.target) >= VEL_DEADBAND || fabsf(pid_right.target) >= VEL_DEADBAND)) {
+    startBrake();
+  }
+  pid_left.target  = new_l;
+  pid_right.target = new_r;
   last_cmd_ms = millis();
 }
 
@@ -324,6 +350,9 @@ void loop() {
 
   // ── 3. Watchdog ───────────────────────────────────────────────────────────────
   if (now - last_cmd_ms > CMD_TIMEOUT_MS) {
+    if (fabsf(pid_left.target) >= VEL_DEADBAND || fabsf(pid_right.target) >= VEL_DEADBAND) {
+      startBrake();
+    }
     pid_left.target  = 0.0f;
     pid_right.target = 0.0f;
   }
@@ -352,11 +381,11 @@ void loop() {
 
   if (fabsf(pid_left.target)  < VEL_DEADBAND) {
     pid_left.reset();
-    pwm_l = 0;
+    pwm_l = (now < brake_until_ms && brake_dir_l != 0) ? brake_dir_l * BRAKE_PWM : 0;
   }
   if (fabsf(pid_right.target) < VEL_DEADBAND) {
     pid_right.reset();
-    pwm_r = 0;
+    pwm_r = (now < brake_until_ms && brake_dir_r != 0) ? brake_dir_r * BRAKE_PWM : 0;
   }
 
   setMotor(MOT_L_PWM, MOT_L_DIR, pwm_l);

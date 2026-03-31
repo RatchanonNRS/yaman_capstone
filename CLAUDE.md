@@ -317,7 +317,7 @@ odom
 | Parameter | Value | Location |
 |---|---|---|
 | `inflation_radius` | 0.30m | local + global costmap |
-| `xy_goal_tolerance` | 0.05m | controller_server |
+| `xy_goal_tolerance` | **0.03m** | controller_server |
 | `use_collision_detection` | false | RPP controller |
 | `allow_reversing` | true | RPP controller |
 | `use_rotate_to_heading` | false | RPP controller |
@@ -326,10 +326,25 @@ odom
 | robot footprint | `[[0.30,0.25],[0.30,-0.25],[-0.30,-0.25],[-0.30,0.25]]` | both costmaps |
 | AMCL initial_pose | x=-2.03, y=-0.51, yaw=0 | amcl |
 
+### Arduino Firmware Current State (yamancode_sketch.ino)
+| Parameter | Value |
+|---|---|
+| `PID_KP` | 300 |
+| `PID_KI` | 20 |
+| `PID_KD` | 8 |
+| `PID_INTEGRAL_MAX` | 40 |
+| `VEL_DEADBAND` | 0.03 m/s |
+| `CMD_TIMEOUT_MS` (watchdog) | 200ms |
+| `BRAKE_PWM` | 80 |
+| `BRAKE_DURATION_MS` | 500ms |
+| Brake type | Timer-based — fires on transition from moving→stop, uses old target direction |
+
+**Brake behavior:** When target goes to 0 (k pressed or watchdog), brake fires at 80 PWM for 500ms. Floor friction = 0.011 m/s². Brings robot from ~0.10 m/s to ~0.022 m/s, then 2-3cm coast. **Not yet confirmed working** — to be tested next session.
+
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **PID tuning:** Kp=200, Ki=20, Kd=8 — active brake removed (was causing brownout shutdowns). Test if creeping is resolved.
+- **PID braking:** 80 PWM / 500ms — not yet confirmed for 2-3cm stop. Test next session.
 - **Robot drifts slightly sideways** during forward motion (~6cm over 1m) — likely wheel calibration / wheelbase measurement issue
 
 ---
@@ -418,10 +433,35 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 | What | Before | After |
 |------|--------|-------|
 | `PID_KP` | 500 | 200 |
-| Active brake on stop | `-vel × 200` reverse pulse | `pwm = 0` (cut motors) |
+| Active brake cap | 100 (caused brownout) | 70 |
+| Active brake multiplier | 200 | 150 |
 | Comment: DIR pins | D52/D53 (wrong) | D22/D23 (correct) |
 
-**Why Kp=200:** Still stronger than original 150 (better response) but avoids aggressive current spikes on acceleration. The active brake was dangerous — instant direction reversal under load is a brownout risk with the mini560 power supply.
+**Brake tuning history this session:**
+- First fix: removed brake entirely (pwm=0) → robot coasted 4-5 seconds, too slow
+- Second try: cap=40, multiplier=80 → still too slow to stop
+- Third try: cap=70, multiplier=150 → still too slow
+- cap=100, multiplier=200 → still slow — robot arrives at low speed (low Kp), so proportional brake force is also tiny (e.g. 0.05 m/s × 200 = 10 PWM, not enough)
+- Watchdog timeout: 500ms → 200ms
+- **Root cause of slow stop:** proportional brake is weak when robot is slow. Fix: use FIXED-force brake (constant PWM regardless of speed) + raise Kp so robot actually reaches commanded speed
+- fixed 80 PWM based on encoder vel direction → still same (encoder vel near 0 at low speed, brake never triggers)
+- **Root cause confirmed:** brake condition `vel > VEL_DEADBAND` never fires because at low speed encoder reads ~0
+- Timer-based brake (300ms, 150 PWM) → still no effect. Bug: teleop sends V:0,0 at 10Hz, each call re-invokes startBrake() which re-reads target (already 0) and resets brake_dir to 0, cancelling the brake every 100ms
+- **Real fix:** only call startBrake() on TRANSITION from moving to stop (check old target was non-zero). This fixed the cancellation bug.
+- Timer brake confirmed WORKING from log. Tuning history:
+  - 150 PWM, 300ms → overshot -0.27m backward (too strong)
+  - 80 PWM, 150ms → decelerates -0.103→-0.033 m/s in 1s, then coasts ~5cm (floor friction 0.011 m/s²)
+  - 80 PWM, 250ms → same coast issue, 0.033 m/s remaining = 5cm
+  - 80 PWM, 500ms → brings vel to ~0.022 m/s → 2-3cm coast ✓. Also xy_goal_tolerance 0.05→0.03
+
+**Why Kp=300:** Stronger than original 150, robot responds better. Active brake replaced with timer-based brake — safe from brownout. Kp=500 was the original brownout cause.
+
+**Floor friction note:** Floor deceleration measured at 0.011 m/s². Very low. With 80 PWM brake:
+- Brake deceleration = 0.248 m/s² (measured from log)
+- 500ms brings robot from 0.10 m/s to ~0.022 m/s → coast = 2-3cm ✓
+- At full teleop speed (0.22 m/s) stopping distance is ~10cm — physics limit without stronger brake
+
+**Also changed:** `xy_goal_tolerance` 0.05 → 0.03m (both source and installed nav2_params.yaml)
 
 ---
 
@@ -462,7 +502,8 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 6. ~~**REMAP THE ROOM**~~ — **DONE** (Session 8) ✅ — map saved, origin adjusted so HOME = (-2.03, -0.51) in map frame
 7. ~~**Test Nav2 forward motion**~~ — **DONE** (Session 8) ✅ — robot drove 1m forward successfully
 8. ~~**PID brownout crash**~~ — **FIXED** (Session 9) ✅ — Kp 500→200, removed active brake
-9. **🔴 PID fine-tuning** — Kp=200, Ki=20, Kd=8. Test if creeping is resolved. May still need adjustment.
+9. **🔴 Confirm PID braking** — 80 PWM / 500ms timer brake not yet confirmed. Test: hold i, press k → should stop in 2-3cm. Say "check log" to verify.
+10. **🔴 Test Nav2 RETURN (backward)** — `allow_reversing: true` is set, not yet tested
 9. **🔴 Test Nav2 RETURN (backward)** — `allow_reversing: true` is set, test sending goal back to HOME after forward move
 10. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF exact distance
 11. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
