@@ -313,6 +313,33 @@ odom
 - **No 2D Pose Estimate needed at startup** if robot is at HOME
 - **Always bring robot to HOME before shutdown** so AMCL auto-localizes next session
 
+### ✅ MISSION NODE WORKING (Session 10, 2026-03-31)
+- **target_distance = 2.50m** (measured: robot teleoperated to shelf, odom x=2.60m, reduced 10cm after hitting shelf)
+- **Return leg:** uses direct cmd_vel (NOT Nav2) — NavFn planner always turns, doesn't reverse. Nav2 still used for GOING leg (legitimate for report).
+- **Slowdown added to mission_node.py:** slows to 0.05 m/s at 0.20m before target (both GOING and RETURNING)
+- **Mission ran successfully this session:** reached shelf (x=2.73m odom), started SEQ:START ✅
+- **y-drift during straight mission: only -0.0036m** — almost perfectly straight ✅
+
+### Session 11 (2026-03-31) — RViz fixed, GOING leg confirmed, SEQ:START bug found
+
+#### What worked
+- **return_home script ran successfully:** traveled 2.504m, robot physically at HOME ✅
+- **RViz fully working:** Map(/map), LaserScan(/scan), RobotModel, TF, AMCL particles all visible ✅
+  - agv.rviz already had all topics set correctly — no file changes needed
+  - Used **2D Pose Estimate** to align red scan dots with black map walls ✅
+  - AMCL converged to ~(-2.0, -0.6) ≈ HOME ✅
+- **GOING leg confirmed again:** robot drove 2.50m from HOME to SHELF ✅
+
+#### SEQ:START bug — NOT FIXED, investigate next session
+- mission_node reached shelf, sent SEQ:START via /sequence/command ✅
+- serial_bridge received and forwarded SEQ:START to Arduino ✅ (logged: "Sequence command → Arduino: SEQ:START")
+- **Arduino sent NO response** — no SEQ:STEP, SEQ:DONE, or SEQ:FAIL messages on serial
+- Arduino sketch DOES have SEQ:START handler (yamancode_sketch.ino line 256) — should reply with SEQ:STEP:1
+- Root cause unknown — Arduino may have missed the command due to serial buffer/timing issue, or mock sequence state machine got stuck
+- **Next session:** debug by manually sending `SEQ:START\n` to Arduino via serial monitor or `echo "SEQ:START" > /dev/ttyUSBArduinoMega` and watch for response
+
+#### **Robot currently at SHELF** — must return to HOME at start of next session before anything else
+
 ### Nav2 Current Config (key non-default settings)
 | Parameter | Value | Location |
 |---|---|---|
@@ -344,8 +371,8 @@ odom
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **PID braking:** 80 PWM / 500ms — not yet confirmed for 2-3cm stop. Test next session.
-- **Robot drifts slightly sideways** during forward motion (~6cm over 1m) — likely wheel calibration / wheelbase measurement issue
+- **RViz map not showing:** agv.rviz Map display has empty topic field — must manually set to `/map` in RViz, or fix the .rviz config file. Also need to add: RobotModel, LaserScan (/scan), TF. Fixed frame = `map`.
+- **Robot drifts slightly sideways** during forward motion (~6cm over 1m) — acceptable for now
 
 ---
 
@@ -502,10 +529,57 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 6. ~~**REMAP THE ROOM**~~ — **DONE** (Session 8) ✅ — map saved, origin adjusted so HOME = (-2.03, -0.51) in map frame
 7. ~~**Test Nav2 forward motion**~~ — **DONE** (Session 8) ✅ — robot drove 1m forward successfully
 8. ~~**PID brownout crash**~~ — **FIXED** (Session 9) ✅ — Kp 500→200, removed active brake
-9. **🔴 Confirm PID braking** — 80 PWM / 500ms timer brake not yet confirmed. Test: hold i, press k → should stop in 2-3cm. Say "check log" to verify.
-10. **🔴 Test Nav2 RETURN (backward)** — `allow_reversing: true` is set, not yet tested
-9. **🔴 Test Nav2 RETURN (backward)** — `allow_reversing: true` is set, test sending goal back to HOME after forward move
-10. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF exact distance
-11. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
+9. ~~**Measure target_distance**~~ — **DONE** (Session 10) ✅ — target_distance = **2.50m**
+10. ~~**Nav2 return decision**~~ — **DECIDED** (Session 10) ✅ — use cmd_vel odom-based return in mission_node. Nav2 for GOING only.
+11. ~~**Slowdown zone**~~ — **DONE** (Session 10) ✅ — slows to 0.05 m/s at 0.20m before target (both directions)
+12. ~~**Return robot to HOME**~~ — **DONE** (Session 11) ✅ — return_home script ran, traveled 2.504m
+13. ~~**Fix RViz for presentation**~~ — **DONE** (Session 11) ✅ — agv.rviz already correct, used 2D Pose Estimate to align scan with map
+14. **🔴 FIRST THING NEXT SESSION: return robot to HOME** — robot left at SHELF after GOING leg. Run return_home script before anything else.
+15. **🔴 Debug SEQ:START → Arduino no response** — serial_bridge sent it, Arduino has handler, but no SEQ:STEP reply came back. Try: `echo "SEQ:START" | ssh rpi "cat > /dev/ttyUSBArduinoMega"` OR open serial monitor on Arduino IDE and manually send SEQ:START. Confirm mock sequence fires.
+16. **🔴 Test full mock mission end-to-end** — GOING + SEQUENCING + RETURNING, watch in RViz. `ros2 run robot_controller mission_node --ros-args -p target_distance:=2.50` (launch nav2 first separately)
+15. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
+16. **Camera setup** — USB camera, integrate with sequence Step 9
+
+### Return Robot to HOME (inline script — use when robot is stuck at SHELF)
+```bash
+ssh -i ~/.ssh/id_rpi yaman@192.168.137.50
+source /opt/ros/jazzy/setup.bash && source ~/yaman_capstone/robot_ws/install/setup.bash
+# Then in Python:
+python3 - <<'EOF'
+import rclpy, math
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+
+class ReturnHome(Node):
+    def __init__(self):
+        super().__init__('return_home')
+        self.target = 2.50
+        self.start_x = self.start_y = self.cur_x = self.cur_y = None
+        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
+        self.create_timer(0.1, self.loop)
+        self.done = False
+    def odom_cb(self, msg):
+        x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
+        if self.start_x is None: self.start_x, self.start_y = x, y
+        self.cur_x, self.cur_y = x, y
+    def loop(self):
+        if self.done or self.start_x is None: return
+        traveled = math.sqrt((self.cur_x-self.start_x)**2+(self.cur_y-self.start_y)**2)
+        remaining = self.target - traveled
+        if traveled >= self.target:
+            self.pub.publish(Twist())
+            self.get_logger().info('HOME reached')
+            self.done = True; raise SystemExit
+        t = Twist()
+        t.linear.x = -0.05 if remaining <= 0.20 else -0.15
+        self.pub.publish(t)
+rclpy.init(); node = ReturnHome()
+try: rclpy.spin(node)
+except SystemExit: pass
+node.destroy_node(); rclpy.shutdown()
+EOF
+```
 12. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
 13. **Camera setup** — USB camera, integrate with sequence Step 9
