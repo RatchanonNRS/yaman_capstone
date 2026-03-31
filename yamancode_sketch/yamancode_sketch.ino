@@ -6,8 +6,8 @@
  *     Left  OutA→D2,  OutB→D3
  *     Right OutA→D18, OutB→D19
  *   Motor Driver: Cytron MDD20A
- *     Left  PWM→D6,  DIR→D52
- *     Right PWM→D7,  DIR→D53
+ *     Left  PWM→D6,  DIR→D22
+ *     Right PWM→D7,  DIR→D23
  *   IMU : MPU6050 moved to RPi I2C (GPIO 2/3) — handled by imu_node.py
  *
  * Gear train:
@@ -66,10 +66,11 @@ constexpr float M_PER_COUNT     = WHEEL_CIRCUM_M / COUNTS_PER_REV;
 constexpr float WHEELBASE_M     = 0.445f;
 
 // ── PID gains (tune on real robot) ───────────────────────────────────────────
-constexpr float PID_KP           = 500.0f;
-constexpr float PID_KI           = 50.0f;
-constexpr float PID_KD           = 2.0f;
-constexpr float PID_INTEGRAL_MAX = 80.0f;
+constexpr float PID_KP           = 200.0f;
+constexpr float PID_KI           = 20.0f;
+constexpr float PID_KD           = 8.0f;
+constexpr float PID_INTEGRAL_MAX = 40.0f;
+constexpr float VEL_DEADBAND     = 0.03f;  // m/s — targets below this cut motors
 constexpr float MAX_VEL_MS       = 0.5f;
 
 // ── Encoder state (ISR-updated) ──────────────────────────────────────────────
@@ -349,8 +350,14 @@ void loop() {
   int16_t pwm_l = pid_left.compute(vel_left_actual,  dt);
   int16_t pwm_r = pid_right.compute(vel_right_actual, dt);
 
-  if (pid_left.target  == 0.0f) { pwm_l = 0; pid_left.reset();  }
-  if (pid_right.target == 0.0f) { pwm_r = 0; pid_right.reset(); }
+  if (fabsf(pid_left.target)  < VEL_DEADBAND) {
+    pid_left.reset();
+    pwm_l = 0;
+  }
+  if (fabsf(pid_right.target) < VEL_DEADBAND) {
+    pid_right.reset();
+    pwm_r = 0;
+  }
 
   setMotor(MOT_L_PWM, MOT_L_DIR, pwm_l);
   setMotor(MOT_R_PWM, MOT_R_DIR, pwm_r);

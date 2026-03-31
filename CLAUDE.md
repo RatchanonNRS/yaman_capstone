@@ -329,7 +329,7 @@ odom
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **PID tuning:** Kp=500, Ki=50, Kd=2 — robot overshoots and creeps slowly after reaching goal. Needs tuning next session.
+- **PID tuning:** Kp=200, Ki=20, Kd=8 — active brake removed (was causing brownout shutdowns). Test if creeping is resolved.
 - **Robot drifts slightly sideways** during forward motion (~6cm over 1m) — likely wheel calibration / wheelbase measurement issue
 
 ---
@@ -407,6 +407,24 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 
 ---
 
+### Session 9 (2026-03-31) — PID Brownout Bug Fixed ✅
+
+#### Root cause found: active brake + high Kp caused Pi shutdown
+
+**What happened:** During PID tuning (previous unsaved session), firmware was uploaded with `Kp=500` and an active braking block. The robot overshot the goal at high speed (~0.3 m/s). When the watchdog fired (target→0), the active brake applied an immediate full reverse pulse (`-vel × 200`, up to PWM=-100). This sudden motor direction reversal caused a large current spike → Pi 5 voltage dropped below threshold → shutdown. On Pi restart, the same brake fired again from robot coasting → second shutdown. Uploading empty sketch to Mega stopped the motors and allowed Pi to stay on.
+
+#### Fixes applied to `yamancode_sketch.ino`
+
+| What | Before | After |
+|------|--------|-------|
+| `PID_KP` | 500 | 200 |
+| Active brake on stop | `-vel × 200` reverse pulse | `pwm = 0` (cut motors) |
+| Comment: DIR pins | D52/D53 (wrong) | D22/D23 (correct) |
+
+**Why Kp=200:** Still stronger than original 150 (better response) but avoids aggressive current spikes on acceleration. The active brake was dangerous — instant direction reversal under load is a brownout risk with the mini560 power supply.
+
+---
+
 ### Session 8 (2026-03-31) — Nav2 Forward Motion Working ✅
 
 #### Map remapped and Nav2 tuned
@@ -443,7 +461,8 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 5. ~~**SLAM mapping**~~ — **DONE** (Session 8, 2026-03-31) ✅
 6. ~~**REMAP THE ROOM**~~ — **DONE** (Session 8) ✅ — map saved, origin adjusted so HOME = (-2.03, -0.51) in map frame
 7. ~~**Test Nav2 forward motion**~~ — **DONE** (Session 8) ✅ — robot drove 1m forward successfully
-8. **🔴 PID tuning** — robot creeps slowly after reaching goal (overshoots). Kp=500, Ki=50, Kd=2 in yamancode_sketch.ino
+8. ~~**PID brownout crash**~~ — **FIXED** (Session 9) ✅ — Kp 500→200, removed active brake
+9. **🔴 PID fine-tuning** — Kp=200, Ki=20, Kd=8. Test if creeping is resolved. May still need adjustment.
 9. **🔴 Test Nav2 RETURN (backward)** — `allow_reversing: true` is set, test sending goal back to HOME after forward move
 10. **🔴 Measure target_distance** — use teleop + odom to find HOME→SHELF exact distance
 11. **🔴 Test full mock mission** — `ros2 launch robot_controller mission.launch.py target_distance:=X.X`
