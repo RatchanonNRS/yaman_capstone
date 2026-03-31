@@ -27,7 +27,7 @@ Read this file at the start of every session to understand the full project stat
   - Nav2 launch uses the INSTALLED file. Source changes don't apply until `colcon build` is run.
 - **Kill command before any launch:**
   ```bash
-  kill -9 $(ps aux | grep -E 'serial_bridge|imu_node|sllidar|robot_state|ros2|component_container' | grep -v grep | awk '{print $2}') 2>/dev/null
+  kill -9 $(ps aux | grep -E 'serial_bridge|imu_node|sllidar|robot_state|ros2|component_container' | grep -v grep | awk '{print $2}') 2>/dev/null; rm -rf /dev/shm/fastrtps_* 2>/dev/null
   ```
 - **Launch Nav2 on RPi:**
   ```bash
@@ -104,7 +104,8 @@ Autonomous Ground Vehicle (AGV) that navigates via mission (home → destination
             │   ├── __init__.py
             │   ├── serial_bridge.py     ← Arduino↔ROS2: /odom, /sequence/status, /sequence/command
             │   ├── imu_node.py          ← MPU6050 via RPi I2C → /imu/data at 50Hz
-            │   └── mission_node.py      ← Shuttle mission: GOING→SEQUENCING→RETURNING
+            │   ├── mission_node.py      ← Shuttle mission: GOING→SEQUENCING→RETURNING
+            │   └── round_trip_safe.py   ← Odom-based round trip with inline scan safety ✅ WORKING
             ├── launch/
             │   ├── bringup.launch.py    ← robot_state_publisher + serial_bridge + imu_node + sllidar
             │   ├── mission.launch.py    ← bringup + mission_node (param: target_distance)
@@ -320,6 +321,85 @@ odom
 - **Mission ran successfully this session:** reached shelf (x=2.73m odom), started SEQ:START ✅
 - **y-drift during straight mission: only -0.0036m** — almost perfectly straight ✅
 
+### Session 13 (2026-04-01) — round_trip_safe.py WORKING ✅, Lidar ghost root cause found
+
+#### What was done
+- **round_trip_safe.py fully working** — robot drove 2.506m HOME→SHELF, waited 2s, returned 2.623m home ✅
+- **Lidar ghost root cause identified** — the "ghost" in front scan is the robot's own ARM/HORIZONTAL RAIL at 0.71m@scan 0°
+- **Robot corner pillars identified** — appear at ±39° and ±141° at ~0.33m (4 pillars of AGV frame)
+- **Lidar correctly oriented confirmed** — scan 0° = physical front of robot ✅
+
+#### Lidar scan anatomy (full 360°, robot at HOME)
+| Direction | Range | What it is |
+|---|---|---|
+| Scan 0° (front) | 0.71m | **Robot's own ARM/rail structure** — always present, filters needed |
+| Scan ±39°, ±141° | ~0.33m | **Robot's own corner pillars** (matches footprint geometry) |
+| Scan -90° (right) | 0.85m | Right room wall |
+| Scan +90° (left) | 1.33m | Left room wall |
+| Scan 180° (rear) | 2.88m | Back room wall |
+
+#### round_trip_safe.py — how it works
+- File: `robot_controller/robot_controller/round_trip_safe.py` (also at `/tmp/round_trip_safe.py` on RPi)
+- **Annular cone:** ±12° INNER exclusion (robot arm zone) to ±20° OUTER — skips arm, checks sides
+- **MIN_DETECT_DIST = 0.50m** (filters pillars at 0.33m)
+- **MIN_POINTS = 100** (effectively disabled for now — arm gives ~32pts in annular zone; set to 50 to enable real detection)
+- **Dynamic range:** `min(1.5m, remaining - 0.3m)` — shrinks as robot approaches shelf (avoids shelf wall false trigger)
+- **Speeds:** NORMAL=0.15 m/s, SLOW=0.05 m/s, slowdown at last 0.20m
+- **Logs:** `/tmp/rts.log` on RPi
+
+#### To enable real obstacle detection next session:
+Change `MIN_POINTS = 100` → `MIN_POINTS = 50` in round_trip_safe.py. Arm gives ~32 pts, a real person gives >32 pts.
+
+#### Robot position at end of session
+- **Robot is at HOME** ✅ — odom was 0,0 at start, robot returned successfully
+
+---
+
+### Session 12 (2026-03-31) — Safety node built, teleop fixed, many issues found
+
+#### What was done
+- **safety_node.py built** — watches /scan during GOING/RETURNING, publishes /emergency_stop (Bool)
+- **serial_bridge.py updated** — subscribes /emergency_stop, drops cmd_vel and sends V:0,0 when True
+- **Kill command updated** — now includes `rm -rf /dev/shm/fastrtps_*` to prevent shared memory port clog
+- **FootprintApproach disabled** — was fighting teleop on /cmd_vel (4 publishers, collision_monitor output = /cmd_vel)
+- **round_trip_safe.py** at `/tmp/round_trip_safe.py` on RPi — round trip with safety built in, dynamic max_range
+
+#### Problems found this session
+
+**1. Teleop unreliable after restarts**
+- Root cause 1: collision_monitor outputs to /cmd_vel. When it sees obstacles (room walls), publishes V:0,0 constantly, overriding teleop. Fixed: FootprintApproach.enabled = False
+- Root cause 2: multiple Nav2 restarts clog shared memory ports (fastrtps_port7000+). Fixed: add `rm -rf /dev/shm/fastrtps_*` to kill command
+
+**2. Odom resets on every Nav2/bringup restart**
+- Odom resets to 0,0 regardless of physical robot position
+- go_shelf.py / return_home.py measure distance FROM odom 0,0 — if robot is not physically at HOME when Nav2 starts, scripts travel wrong distance and hit walls
+- **Rule: ALWAYS teleop robot to HOME physically before restarting Nav2**
+
+**3. Safety node (separate) architecture was problematic**
+- Too many nodes competing on /cmd_vel (collision_monitor, safety_node, teleop, scripts)
+- Better design: integrate scan check INSIDE the movement script (round_trip_safe.py does this)
+- Safety node files still exist in codebase but round_trip_safe.py is the tested approach
+
+**4. Safety triggers on shelf wall**
+- At ~1m from home, shelf wall (1.5m ahead) enters detection zone → false stop
+- Fix: dynamic max_range = min(1.5m, remaining_distance - 0.3m). Implemented in round_trip_safe.py but NOT yet fully tested
+
+**5. SmacPlanner2D failed on RPi**
+- Tried to fix Nav2 "turns instead of reversing" — SmacPlanner2D too heavy, robot never moved
+- Reverted to NavFn. Nav2 2D Goal Pose still turns — accepted limitation for RViz manual testing
+- Actual mission legs use direct cmd_vel (not Nav2) — works correctly
+
+**6. SEQ:START bug still not fixed**
+- No progress this session
+
+#### ⚠️ CRITICAL RULE ADDED THIS SESSION
+**Before ANY movement script: robot MUST be physically at HOME with odom at 0,0**
+Check odom with: `tail -3 /tmp/nav2.log | grep Odom` — must show x≈0, y≈0 before running go_shelf or mission
+
+#### Robot position at end of session
+- Robot is being returned to HOME by Yaman via teleop
+- Nav2 running, odom at 0,0
+
 ### Session 11 (2026-03-31) — RViz fixed, GOING leg confirmed, SEQ:START bug found
 
 #### What worked
@@ -371,14 +451,22 @@ odom
 ### ⚠️ Known Issues
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
-- **RViz map not showing:** agv.rviz Map display has empty topic field — must manually set to `/map` in RViz, or fix the .rviz config file. Also need to add: RobotModel, LaserScan (/scan), TF. Fixed frame = `map`.
-- **Robot drifts slightly sideways** during forward motion (~6cm over 1m) — acceptable for now
+- **Robot's arm in scan plane:** Horizontal rail/arm appears at 0.71m@0° in lidar scan — use annular cone filter (±12° exclusion) in any scan-based safety code. Proper fix: `laser_filters` angular bounds filter.
+- **SEQ:START no response:** Arduino has handler but never replies — manually test with serial monitor
+- **Robot drifts slightly sideways** during forward motion (~6cm over 2.5m) — acceptable for now
+- **round_trip_safe.py scan disabled:** MIN_POINTS=100 means no real obstacle detection yet — set to 50 to enable
 
 ---
 
 ## Run Commands
 
 ```bash
+# RPi — round trip safe (odom-based, with inline scan safety)
+# Robot MUST be at HOME with odom=0,0 before running
+source /opt/ros/jazzy/setup.bash && source ~/yaman_capstone/robot_ws/install/setup.bash
+python3 ~/yaman_capstone/robot_ws/src/robot_controller/robot_controller/round_trip_safe.py
+# Logs: tail -f /tmp/rts.log
+
 # RPi — bringup only
 ros2 launch robot_controller bringup.launch.py
 
@@ -534,11 +622,13 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 11. ~~**Slowdown zone**~~ — **DONE** (Session 10) ✅ — slows to 0.05 m/s at 0.20m before target (both directions)
 12. ~~**Return robot to HOME**~~ — **DONE** (Session 11) ✅ — return_home script ran, traveled 2.504m
 13. ~~**Fix RViz for presentation**~~ — **DONE** (Session 11) ✅ — agv.rviz already correct, used 2D Pose Estimate to align scan with map
-14. **🔴 FIRST THING NEXT SESSION: return robot to HOME** — robot left at SHELF after GOING leg. Run return_home script before anything else.
-15. **🔴 Debug SEQ:START → Arduino no response** — serial_bridge sent it, Arduino has handler, but no SEQ:STEP reply came back. Try: `echo "SEQ:START" | ssh rpi "cat > /dev/ttyUSBArduinoMega"` OR open serial monitor on Arduino IDE and manually send SEQ:START. Confirm mock sequence fires.
-16. **🔴 Test full mock mission end-to-end** — GOING + SEQUENCING + RETURNING, watch in RViz. `ros2 run robot_controller mission_node --ros-args -p target_distance:=2.50` (launch nav2 first separately)
-15. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
-16. **Camera setup** — USB camera, integrate with sequence Step 9
+14. ~~**Return robot to HOME**~~ — done (Session 13) ✅
+15. ~~**Test round_trip_safe.py**~~ — **DONE** (Session 13) ✅ — drove 2.506m to shelf, returned 2.623m home
+16. **🔴 Debug SEQ:START → Arduino no response** — open Arduino IDE serial monitor, manually send `SEQ:START\n`, confirm SEQ:STEP:1 reply. Then test via ROS2.
+17. **🔴 Enable real obstacle detection** — set `MIN_POINTS = 50` in round_trip_safe.py (was 100=disabled). Block path mid-run, confirm robot stops and resumes.
+18. **🔴 Integrate safety + sequence into mission_node** — once SEQ:START fixed, merge round_trip_safe logic into mission_node.py properly
+19. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
+20. **Camera setup** — USB camera, integrate with sequence Step 9
 
 ### Return Robot to HOME (inline script — use when robot is stuck at SHELF)
 ```bash
