@@ -131,8 +131,8 @@ constexpr uint32_t CMD_TIMEOUT_MS = 200;
 uint32_t brake_until_ms = 0;
 int8_t   brake_dir_l    = 0;  // -1, 0, +1
 int8_t   brake_dir_r    = 0;
-constexpr uint32_t BRAKE_DURATION_MS = 200;   // short brake — prevents Pi brownout
-constexpr int16_t  BRAKE_PWM         = 20;    // very light brake — prevents Pi brownout at teleop speed
+constexpr uint32_t BRAKE_DURATION_MS = 200;
+constexpr int16_t  BRAKE_PWM         = 0;     // DISABLED — was causing Pi brownout; slowdown zone handles precision stop
 
 // ── Keyboard teleop speed step ───────────────────────────────────────────────
 float key_vx = 0.20f;
