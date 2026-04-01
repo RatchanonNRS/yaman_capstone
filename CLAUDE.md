@@ -315,6 +315,17 @@ odom
 - **No 2D Pose Estimate needed at startup** if robot is at HOME
 - **Always bring robot to HOME before shutdown** so AMCL auto-localizes next session
 
+### Session 16 (2026-04-01) — Brake reduced, sequence heartbeat added
+
+#### What was done
+- **sequence_hardware.h updated** — `seqKeepAlive()` now fires `SEQ:HB` every 3s during blocking sequence (previously heartbeat was dead for ~30-60s while sequence ran)
+- **EE dwell added** — `seqDelay(1000)` after EE down pick, before retract — matches `arduinonoraspi.txt` (1s vacuum dwell to seat pack)
+- **Brake reduced** — `BRAKE_PWM` 80→20, `BRAKE_DURATION_MS` 500→200ms to prevent Pi brownout during teleop
+- **Brake still problematic for teleop** — even at 20 PWM the brake behavior is noticeable. Root cause: `teleop_twist_keyboard` sends V:0,0 on key release, which triggers the brake transition. Fix needed: investigate disabling brake for teleop or reducing further.
+- **Robot NOT at HOME** — Pi shut down mid-session during teleop. Robot manually repositioned by Yaman next session.
+
+---
+
 ### ✅ MISSION NODE WORKING (Session 10, 2026-03-31)
 - **target_distance = 2.70m** (updated Session 15, 2026-04-01 — 2.50m was 20cm short of shelf)
 - **Return leg:** uses direct cmd_vel (NOT Nav2) — NavFn planner always turns, doesn't reverse. Nav2 still used for GOING leg (legitimate for report).
@@ -480,7 +491,9 @@ Check odom with: `tail -3 /tmp/nav2.log | grep Odom` — must show x≈0, y≈0 
 | `BRAKE_PWM` | 80 |
 | `BRAKE_DURATION_MS` | 500ms |
 | Brake type | Timer-based — fires on transition from moving→stop, uses old target direction |
-| `SEQ:HB` heartbeat | Every 3s — confirms bidirectional serial is live (appears in nav2.log as `Sequence: SEQ:HB`) |
+| `BRAKE_PWM` | 20 (reduced from 80 — was causing Pi brownout on teleop) |
+| `BRAKE_DURATION_MS` | 200ms (reduced from 500) |
+| `SEQ:HB` heartbeat | Every 3s — fires from main loop (idle/driving) AND from seqKeepAlive() during sequence |
 
 **Brake behavior:** When target goes to 0 (k pressed or watchdog), brake fires at 80 PWM for 500ms. Floor friction = 0.011 m/s². Brings robot from ~0.10 m/s to ~0.022 m/s, then 2-3cm coast. **Not yet confirmed working** — to be tested next session.
 
@@ -491,6 +504,7 @@ Check odom with: `tail -3 /tmp/nav2.log | grep Odom` — must show x≈0, y≈0 
 - ~~**SEQ:START no response**~~ — **FIXED Session 15** ✅ Root cause: motor_test_sketch was loaded on Arduino instead of yamancode_sketch. Correct sketch now uploaded. SEQ:DBUG debug line removed. SEQ:HB heartbeat added permanently.
 - **Robot drifts slightly sideways** during forward motion (~6cm over 2.5m) — acceptable for now
 - **round_trip_safe.py scan disabled:** MIN_POINTS=100 means no real obstacle detection yet — set to 50 to enable
+- **Brake still bad for teleop** — even at BRAKE_PWM=20/200ms, brake fires on key release via V:0,0. Options: (a) lower further to 5/100ms, (b) disable brake entirely for teleop by adding a BRAKE:OFF serial command, (c) remove brake and rely on floor friction + slowdown zone for mission precision
 
 ---
 
@@ -662,7 +676,8 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 15. ~~**Test round_trip_safe.py**~~ — **DONE** (Session 13) ✅ — drove 2.506m to shelf, returned 2.623m home
 16. ~~**Return robot to HOME**~~ — done ✅
 17. ~~**Debug SEQ:START**~~ — **FIXED Session 15** ✅ (wrong sketch was loaded)
-18. **🔴 Enable real obstacle detection** — set `MIN_POINTS = 50` in round_trip_safe.py (was 100=disabled). Block path mid-run, confirm robot stops and resumes.
+18. **🔴 Fix teleop brake** — brake fires on V:0,0 from key release. Options: lower to 5/100ms, add BRAKE:OFF command, or remove entirely (floor friction sufficient with slowdown zone).
+19. **🔴 Enable real obstacle detection** — set `MIN_POINTS = 50` in round_trip_safe.py (was 100=disabled). Block path mid-run, confirm robot stops and resumes.
 19. **🔴 Integrate safety + sequence into mission_node** — merge round_trip_safe logic + SEQ:START/DONE handling into mission_node.py for full autonomous mission
 20. **🔴 Save round_trip_safe.py to repo** — currently only at /tmp on RPi, lost on reboot
 21. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
