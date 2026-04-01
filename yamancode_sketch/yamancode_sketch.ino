@@ -46,6 +46,7 @@
 
 #include <Arduino.h>
 #include <math.h>
+#include <Servo.h>
 
 // ── Pin definitions ──────────────────────────────────────────────────────────
 #define ENC_L_A   2
@@ -130,12 +131,16 @@ constexpr uint32_t CMD_TIMEOUT_MS = 200;
 uint32_t brake_until_ms = 0;
 int8_t   brake_dir_l    = 0;  // -1, 0, +1
 int8_t   brake_dir_r    = 0;
-constexpr uint32_t BRAKE_DURATION_MS = 500;
-constexpr int16_t  BRAKE_PWM         = 80;
+constexpr uint32_t BRAKE_DURATION_MS = 200;   // short brake — prevents Pi brownout
+constexpr int16_t  BRAKE_PWM         = 20;    // very light brake — prevents Pi brownout at teleop speed
 
 // ── Keyboard teleop speed step ───────────────────────────────────────────────
 float key_vx = 0.20f;
 float key_wz = 0.40f;
+
+// ── Heartbeat (debug) ─────────────────────────────────────────────────────────
+uint32_t last_hb_ms = 0;
+constexpr uint32_t HB_INTERVAL_MS = 3000;
 
 void startBrake() {
   brake_dir_l    = (pid_left.target  > VEL_DEADBAND) ? -1 : (pid_left.target  < -VEL_DEADBAND) ? 1 : 0;
@@ -249,17 +254,17 @@ void runSequence() {
   }
 }
 
+// ── Real hardware sequence (included here so runRealSequence() is visible to parseCommand below) ──
+#include "sequence_hardware.h"
+
 // ── Serial parsing ────────────────────────────────────────────────────────────
 String serialBuf = "";
 
 void parseCommand(const String &cmd) {
   if (cmd.startsWith("SEQ:START")) {
-    seq_running    = true;
-    seq_step       = 0;
-    vacuum_retries = 0;
-    mock_fail_done = false;
-    seq_step_ms    = millis();
-    Serial.println("SEQ:STEP:1:AGV at shelf — sequence starting");
+    seq_running = false;  // disable mock runner
+    Serial.println("SEQ:STEP:1:AGV at shelf - sequence starting");
+    runRealSequence();    // blocking — returns when done or failed
     return;
   }
 
@@ -323,6 +328,8 @@ void setup() {
 
   last_cmd_ms  = millis();
   last_loop_ms = millis();
+
+  setupSequenceHardware();
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -400,7 +407,13 @@ void loop() {
   odom_x += d_center * cos(odom_th - d_theta * 0.5f);
   odom_y += d_center * sin(odom_th - d_theta * 0.5f);
 
-  // ── 8. Publish odometry ───────────────────────────────────────────────────────
+  // ── 8. Heartbeat — fires when idle/driving (seqKeepAlive fires during sequence) ─
+  if (now - last_hb_ms >= HB_INTERVAL_MS) {
+    last_hb_ms = now;
+    Serial.println("SEQ:HB");
+  }
+
+  // ── 9. Publish odometry ───────────────────────────────────────────────────────
   Serial.print("O:");
   Serial.print(odom_x, 4);          Serial.print(',');
   Serial.print(odom_y, 4);          Serial.print(',');

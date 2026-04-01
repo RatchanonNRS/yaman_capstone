@@ -39,8 +39,8 @@ amcl:
     z_short: 0.05
     scan_topic: /scan
     set_initial_pose: true
-    initial_pose_x: -2.03
-    initial_pose_y: -0.51
+    initial_pose_x: -2.167
+    initial_pose_y: -0.769
     initial_pose_z: 0.0
     initial_pose_yaw: 0.0
 
@@ -335,7 +335,7 @@ collision_monitor:
       simulation_time_step: 0.1
       min_points: 6
       visualize: False
-      enabled: True
+      enabled: False
     observation_sources: ["scan"]
     scan:
       type: "scan"

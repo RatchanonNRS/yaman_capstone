@@ -53,6 +53,13 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # Safety watchdog — stops motors when person detected in path
+        Node(
+            package='robot_controller',
+            executable='safety_node',
+            output='screen',
+        ),
+
         # RPLidar C1 via sllidar_ros2 — publishes /scan on frame laser_frame
         Node(
             name='sllidar_node',

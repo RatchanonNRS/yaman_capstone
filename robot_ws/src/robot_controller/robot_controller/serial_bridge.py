@@ -31,7 +31,7 @@ import serial
 
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from tf2_ros import TransformBroadcaster
 
 
@@ -55,7 +55,8 @@ class SerialBridge(Node):
             raise SystemExit(1)
 
         # ── Command queue: ROS callbacks → serial thread ─────────────────────
-        self._cmd_queue = queue.Queue()
+        self._cmd_queue    = queue.Queue()
+        self._emergency    = False  # set True by safety_node
 
         # ── Publishers ──────────────────────────────────────────────────────
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
@@ -67,6 +68,8 @@ class SerialBridge(Node):
             Twist, '/cmd_vel', self._cmd_vel_cb, 10)
         self.seq_cmd_sub = self.create_subscription(
             String, '/sequence/command', self._seq_command_cb, 10)
+        self.estop_sub = self.create_subscription(
+            Bool, '/emergency_stop', self._estop_cb, 10)
         self._last_cmd_time = time.monotonic()
 
         # ── Watchdog timer (10 Hz) ───────────────────────────────────────────
@@ -81,8 +84,18 @@ class SerialBridge(Node):
         self._odom_count = 0
         self.get_logger().info('Serial bridge ready')
 
+    # ── /emergency_stop callback — bypass queue and stop motors immediately ──
+    def _estop_cb(self, msg: Bool):
+        if msg.data and not self._emergency:
+            self.get_logger().warn('EMERGENCY STOP — motors halted')
+        self._emergency = msg.data
+        if msg.data:
+            self._cmd_queue.put(b'V:0.0000,0.0000\n')
+
     # ── /cmd_vel callback — puts command in queue ────────────────────────────
     def _cmd_vel_cb(self, msg: Twist):
+        if self._emergency:
+            return  # drop velocity commands while emergency stop is active
         vx = msg.linear.x
         wz = msg.angular.z
         self._cmd_queue.put(f'V:{vx:.4f},{wz:.4f}\n'.encode())

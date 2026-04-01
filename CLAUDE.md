@@ -309,17 +309,31 @@ odom
 
 ### ✅ NAV2 WORKING (Session 8, 2026-03-31)
 - Map saved: `~/agv_map.pgm` + `~/agv_map.yaml`
-- HOME position on map: **(-2.03, -0.51)** — saved as AMCL initial_pose
+- HOME position on map: **(-2.167, -0.769)** — saved as AMCL initial_pose (updated Session 14, 2026-04-01)
+- SHELF position on map: **(0.366, -0.464)** (measured Session 14, 2026-04-01)
 - Robot drove **1m forward** successfully ✅
 - **No 2D Pose Estimate needed at startup** if robot is at HOME
 - **Always bring robot to HOME before shutdown** so AMCL auto-localizes next session
 
 ### ✅ MISSION NODE WORKING (Session 10, 2026-03-31)
-- **target_distance = 2.50m** (measured: robot teleoperated to shelf, odom x=2.60m, reduced 10cm after hitting shelf)
+- **target_distance = 2.70m** (updated Session 15, 2026-04-01 — 2.50m was 20cm short of shelf)
 - **Return leg:** uses direct cmd_vel (NOT Nav2) — NavFn planner always turns, doesn't reverse. Nav2 still used for GOING leg (legitimate for report).
 - **Slowdown added to mission_node.py:** slows to 0.05 m/s at 0.20m before target (both GOING and RETURNING)
 - **Mission ran successfully this session:** reached shelf (x=2.73m odom), started SEQ:START ✅
 - **y-drift during straight mission: only -0.0036m** — almost perfectly straight ✅
+
+### Session 15 (2026-04-01) — SEQ:START FIXED ✅, target_distance updated to 2.70m
+
+#### What was done
+- **SEQ:START root cause found and fixed** — wrong sketch (motor_test_sketch) was loaded on Arduino. yamancode_sketch was never actually running in previous sessions. Uploaded correct sketch → SEQ:START works immediately.
+- **Full sequence tested end-to-end:** SEQ:STEP:1 → STEP:3 → ... → SEQ:RETRY:1 → SEQ:DONE ✅
+- **SEQ:HB heartbeat added** to yamancode loop() — sends `SEQ:HB` every 3s. Confirms bidirectional serial is live. Appears in nav2.log as `Sequence: SEQ:HB`. Keep for ongoing health monitoring.
+- **SEQ:DBUG line removed** from parseCommand (was spamming V: debug at 10Hz).
+- **target_distance updated to 2.70m** — 2.50m was 20cm short of shelf. Confirmed with round trip: SHELF at x=2.723m, HOME return at x=0.026m ✅
+- **mock_serial_test sketch created** at `~/yaman_capstone/mock_serial_test/` — proved bidirectional serial concept works (O: stream + SEQ:START/DONE). Keep for future testing.
+- **Robot is at HOME** ✅
+
+---
 
 ### Session 13 (2026-04-01) — round_trip_safe.py WORKING ✅, Lidar ghost root cause found
 
@@ -352,6 +366,27 @@ Change `MIN_POINTS = 100` → `MIN_POINTS = 50` in round_trip_safe.py. Arm gives
 
 #### Robot position at end of session
 - **Robot is at HOME** ✅ — odom was 0,0 at start, robot returned successfully
+
+---
+
+### Session 14 (2026-04-01) — HOME/SHELF positions remeasured, SEQ:START deep debug
+
+#### What was done
+- **HOME remeasured** — 2D Pose Estimate at HOME → AMCL (-2.167, -0.769). Updated both source + installed nav2_params.yaml
+- **SHELF measured** — AMCL (0.366, -0.464) on map. Saved to memory.
+- **Robot driven HOME→SHELF (2.504m) and SHELF→HOME (2.502m)** using inline go_shelf/go_back scripts ✅
+- **SEQ:START deep debug started** — see Known Issues for full detail
+
+#### SEQ:START debug findings (Session 14)
+- Standalone Python test (new serial connection): `parseCommand` NEVER called for ANY command (V: or SEQ:START). Arduino resets on port open, but even after 3s boot, no bytes received by Arduino.
+- Via serial_bridge: serial_bridge logs "Sequence command → Arduino: SEQ:START" ✓ but Arduino never replies
+- Added `Serial.println("SEQ:DBUG:" + cmd)` at top of parseCommand — never appears in serial_bridge log
+- serial_bridge only holds the port (confirmed via lsof) — no conflict
+- Em-dash `—` removed from SEQ:STEP:1 string (was potentially corrupting ASCII decode)
+- **Root cause still unknown** — next step: add SEQ:HB heartbeat to Arduino to confirm serial_bridge reads SEQ: lines from Arduino at all
+
+#### Robot position at end of session
+- Robot returned to HOME in Session 15 ✅
 
 ---
 
@@ -431,7 +466,7 @@ Check odom with: `tail -3 /tmp/nav2.log | grep Odom` — must show x≈0, y≈0 
 | `FootprintApproach.enabled` | false | collision_monitor |
 | local costmap plugins | static_layer + inflation_layer | local_costmap |
 | robot footprint | `[[0.30,0.25],[0.30,-0.25],[-0.30,-0.25],[-0.30,0.25]]` | both costmaps |
-| AMCL initial_pose | x=-2.03, y=-0.51, yaw=0 | amcl |
+| AMCL initial_pose | x=-2.167, y=-0.769, yaw=0 | amcl |
 
 ### Arduino Firmware Current State (yamancode_sketch.ino)
 | Parameter | Value |
@@ -445,6 +480,7 @@ Check odom with: `tail -3 /tmp/nav2.log | grep Odom` — must show x≈0, y≈0 
 | `BRAKE_PWM` | 80 |
 | `BRAKE_DURATION_MS` | 500ms |
 | Brake type | Timer-based — fires on transition from moving→stop, uses old target direction |
+| `SEQ:HB` heartbeat | Every 3s — confirms bidirectional serial is live (appears in nav2.log as `Sequence: SEQ:HB`) |
 
 **Brake behavior:** When target goes to 0 (k pressed or watchdog), brake fires at 80 PWM for 500ms. Floor friction = 0.011 m/s². Brings robot from ~0.10 m/s to ~0.022 m/s, then 2-3cm coast. **Not yet confirmed working** — to be tested next session.
 
@@ -452,7 +488,7 @@ Check odom with: `tail -3 /tmp/nav2.log | grep Odom` — must show x≈0, y≈0 
 - **USB cable:** Arduino USB cable must be seated firmly — loose connection causes data dropout
 - **Power supply:** Pi 5 power warning still present — consider official RPi5 PSU (5.1V/5A with USB PD)
 - **Robot's arm in scan plane:** Horizontal rail/arm appears at 0.71m@0° in lidar scan — use annular cone filter (±12° exclusion) in any scan-based safety code. Proper fix: `laser_filters` angular bounds filter.
-- **SEQ:START no response:** Arduino has handler but never replies — manually test with serial monitor
+- ~~**SEQ:START no response**~~ — **FIXED Session 15** ✅ Root cause: motor_test_sketch was loaded on Arduino instead of yamancode_sketch. Correct sketch now uploaded. SEQ:DBUG debug line removed. SEQ:HB heartbeat added permanently.
 - **Robot drifts slightly sideways** during forward motion (~6cm over 2.5m) — acceptable for now
 - **round_trip_safe.py scan disabled:** MIN_POINTS=100 means no real obstacle detection yet — set to 50 to enable
 
@@ -624,11 +660,13 @@ ros2 run nav2_map_server map_saver_cli -f /home/yaman/agv_map
 13. ~~**Fix RViz for presentation**~~ — **DONE** (Session 11) ✅ — agv.rviz already correct, used 2D Pose Estimate to align scan with map
 14. ~~**Return robot to HOME**~~ — done (Session 13) ✅
 15. ~~**Test round_trip_safe.py**~~ — **DONE** (Session 13) ✅ — drove 2.506m to shelf, returned 2.623m home
-16. **🔴 Debug SEQ:START → Arduino no response** — open Arduino IDE serial monitor, manually send `SEQ:START\n`, confirm SEQ:STEP:1 reply. Then test via ROS2.
-17. **🔴 Enable real obstacle detection** — set `MIN_POINTS = 50` in round_trip_safe.py (was 100=disabled). Block path mid-run, confirm robot stops and resumes.
-18. **🔴 Integrate safety + sequence into mission_node** — once SEQ:START fixed, merge round_trip_safe logic into mission_node.py properly
-19. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
-20. **Camera setup** — USB camera, integrate with sequence Step 9
+16. ~~**Return robot to HOME**~~ — done ✅
+17. ~~**Debug SEQ:START**~~ — **FIXED Session 15** ✅ (wrong sketch was loaded)
+18. **🔴 Enable real obstacle detection** — set `MIN_POINTS = 50` in round_trip_safe.py (was 100=disabled). Block path mid-run, confirm robot stops and resumes.
+19. **🔴 Integrate safety + sequence into mission_node** — merge round_trip_safe logic + SEQ:START/DONE handling into mission_node.py for full autonomous mission
+20. **🔴 Save round_trip_safe.py to repo** — currently only at /tmp on RPi, lost on reboot
+21. **Web dashboard** — sequence steps + camera image (lightweight, runs on RPi)
+22. **Camera setup** — USB camera, integrate with sequence Step 9
 
 ### Return Robot to HOME (inline script — use when robot is stuck at SHELF)
 ```bash

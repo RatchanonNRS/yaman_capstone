@@ -37,6 +37,7 @@ setup(
             'serial_bridge  = robot_controller.serial_bridge:main',
             'imu_node       = robot_controller.imu_node:main',
             'mission_node   = robot_controller.mission_node:main',
+            'safety_node    = robot_controller.safety_node:main',
         ],
     },
 )

@@ -48,11 +48,15 @@ class MissionNode(Node):
 
         self.declare_parameter('target_distance',        2.0)
         self.declare_parameter('forward_speed',          0.15)
+        self.declare_parameter('slow_speed',             0.05)
+        self.declare_parameter('slowdown_distance',      0.20)
         self.declare_parameter('obstacle_stop_distance', 0.45)
         self.declare_parameter('check_angle_deg',        30.0)
 
         self.target_dist    = self.get_parameter('target_distance').value
         self.speed          = self.get_parameter('forward_speed').value
+        self.slow_speed     = self.get_parameter('slow_speed').value
+        self.slowdown_dist  = self.get_parameter('slowdown_distance').value
         self.stop_dist      = self.get_parameter('obstacle_stop_distance').value
         self.check_half_rad = math.radians(self.get_parameter('check_angle_deg').value)
 
@@ -151,7 +155,7 @@ class MissionNode(Node):
                 self._publish_status('OBSTACLE_AHEAD — waiting')
                 return
 
-            twist.linear.x = self.speed
+            twist.linear.x = self.slow_speed if remaining <= self.slowdown_dist else self.speed
 
         elif self.state == 'RETURNING':
             if traveled >= self.target_dist:
@@ -166,7 +170,7 @@ class MissionNode(Node):
                 self._publish_status('OBSTACLE_BEHIND — waiting')
                 return
 
-            twist.linear.x = -self.speed
+            twist.linear.x = -self.slow_speed if remaining <= self.slowdown_dist else -self.speed
 
         self.cmd_pub.publish(twist)
         self._publish_status(f'{self.state}  {traveled:.2f}/{self.target_dist:.2f} m')
