@@ -322,7 +322,7 @@ odom
 - **EE dwell added** — `seqDelay(1000)` after EE down pick, before retract — matches `arduinonoraspi.txt` (1s vacuum dwell to seat pack)
 - **Brake reduced** — `BRAKE_PWM` 80→20, `BRAKE_DURATION_MS` 500→200ms to prevent Pi brownout during teleop
 - **Brake still problematic for teleop** — even at 20 PWM the brake behavior is noticeable. Root cause: `teleop_twist_keyboard` sends V:0,0 on key release, which triggers the brake transition. Fix needed: investigate disabling brake for teleop or reducing further.
-- **Robot NOT at HOME** — Pi shut down mid-session during teleop. Robot manually repositioned by Yaman next session.
+- **Robot is at HOME** ✅ — manually repositioned via teleop + 2D Pose Estimate
 
 ---
 
