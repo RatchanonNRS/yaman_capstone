@@ -73,7 +73,7 @@ static const int SEQ_DC_ALIGN_PWM    = 30;     // AGV nudge PWM during sequence
 static const uint32_t SEQ_EE_DOWN_PICK_MS  = 3050;   // descend to pick medicine pack
 static const uint32_t SEQ_EE_DOWN_PLACE_MS = 3000;   // descend to drop into container
 static const uint32_t SEQ_EE_UP_MS         = 10000;  // retract up (limit switch stops early)
-static const uint32_t SEQ_EE_HOME_MS       = 12000;  // startup full retract
+static const uint32_t SEQ_EE_HOME_MS       = 3500;   // retract at sequence start (reduced from 12000 — limit switch stops early anyway)
 
 // Servo positions
 static const int SERVO_CW   = 0;
@@ -237,8 +237,7 @@ void setupSequenceHardware() {
   gripServo.attach(GRIP_SERVO_PIN);
   gripServo.write(GRIP_SAFE);
 
-  // Home EE servo fully retracted before any operation
-  seqRunEEServo(SERVO_CW, SEQ_EE_HOME_MS);
+  // EE homing moved to runRealSequence() — avoids 12s current draw on every boot
 
   seqResetLEDs();
   Serial.println("SEQ:HW:READY");
@@ -251,6 +250,10 @@ void runRealSequence() {
   // Stop AGV PID — sequence controls DC motors directly for nudges
   pid_left.target  = 0.0f; pid_left.reset();
   pid_right.target = 0.0f; pid_right.reset();
+
+  // Home EE servo before starting (3.5s — limit switch stops it early if already up)
+  Serial.println("SEQ:STEP:2:EE servo homing");
+  seqRunEEServo(SERVO_CW, SEQ_EE_HOME_MS);
 
   // ── PART 1: Retrieve medicine box from shelf ──────────────────────────────
   Serial.println("SEQ:STEP:3:Vertical rail UP");
